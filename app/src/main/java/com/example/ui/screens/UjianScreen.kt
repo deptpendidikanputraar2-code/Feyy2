@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -32,6 +33,7 @@ fun UjianScreen(
     viewModel: MmqaViewModel,
     onExportCsv: (filename: String, csvContent: String) -> Unit
 ) {
+    val context = LocalContext.current
     val canTogglePeserta = viewModel.canAccessAnakSub("ujian_peserta_toggle")
     val canInputNilai = viewModel.canAccessAnakSub("ujian_input_nilai")
     val canExportCsv = viewModel.canAccessAnakSub("ujian_export_csv")
@@ -57,7 +59,8 @@ fun UjianScreen(
         enabledSubmenus.first().id
     }
 
-    val filteredSantri = if (uiState.ujianFirqoh == "ALL") db.santri else db.santri.filter { it.firqohId == uiState.ujianFirqoh }
+    val filteredSantri = db.santri.filter { viewModel.matchesFirqohFilter(it.firqohId, uiState.ujianFirqoh) }
+    val ujianFilterLabel = viewModel.getFirqohFilterDisplayLabel(uiState.ujianFirqoh)
 
     var inputNilaiTargetId by remember { mutableStateOf<String?>(null) }
     var showInputNilaiModal by remember { mutableStateOf(false) }
@@ -80,10 +83,10 @@ fun UjianScreen(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            val options = listOf("ALL" to "Semua Firqoh") + db.firqoh.map { it.id to it.nama }
+            val options = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = true)
             CompactDropdownSelector(
                 label = "",
-                selectedText = options.firstOrNull { it.first == uiState.ujianFirqoh }?.second ?: "Semua Firqoh",
+                selectedText = options.firstOrNull { it.first == uiState.ujianFirqoh }?.second ?: ujianFilterLabel,
                 options = options,
                 onSelect = { fid -> viewModel.updateState { it.copy(ujianFirqoh = fid) } },
                 modifier = Modifier.weight(1f)
@@ -125,6 +128,19 @@ fun UjianScreen(
                             Emerald100, Emerald900
                         )
                     }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    WaPdfActionRow(
+                        onShareWa = {
+                            val msg = MmqaReportFormatters.buildUjianPesertaWa(db, ujianFilterLabel, filteredSantri)
+                            shareTextToWhatsApp(context, msg, "Kirim Daftar Peserta Ujian")
+                        },
+                        onDownloadPdf = {
+                            val html = MmqaReportFormatters.buildUjianPesertaPdfHtml(db, ujianFilterLabel, filteredSantri)
+                            printHtmlDocument(context, "Peserta_Ujian_MMQA_AR2", html)
+                        },
+                        waTestTag = "ujian_peserta_wa_btn",
+                        pdfTestTag = "ujian_peserta_pdf_btn"
+                    )
                     Spacer(modifier = Modifier.height(12.dp))
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         filteredSantri.forEach { s ->
@@ -227,6 +243,18 @@ fun UjianScreen(
                         }
                     }
                 }
+                WaPdfActionRow(
+                    onShareWa = {
+                        val msg = MmqaReportFormatters.buildUjianRekapanWa(db, ujianFilterLabel, rowsData, avgNilai, lulusCount)
+                        shareTextToWhatsApp(context, msg, "Kirim Rekapan Hasil Ujian")
+                    },
+                    onDownloadPdf = {
+                        val html = MmqaReportFormatters.buildUjianRekapanPdfHtml(db, ujianFilterLabel, rowsData, avgNilai, lulusCount)
+                        printHtmlDocument(context, "Rekapan_Hasil_Ujian_MMQA_AR2", html)
+                    },
+                    waTestTag = "ujian_rekapan_wa_btn",
+                    pdfTestTag = "ujian_rekapan_pdf_btn"
+                )
 
                 SectionCard {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

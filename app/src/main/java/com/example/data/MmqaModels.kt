@@ -14,7 +14,7 @@ object MmqaConstants {
         "users", "santri", "muallim", "dewanHarian", "firqoh",
         "absensi", "materi", "ujianMateri", "ujianFormat",
         "nilaiUjian", "keuangan", "suratTemplates", "suratArsip",
-        "inventaris", "chatChannels", "chatMessages", "adminConfig"
+        "inventaris", "personalia", "chatChannels", "chatMessages", "adminConfig"
     )
 
     fun todayStr(): String =
@@ -101,6 +101,172 @@ data class DewanHarianItem(
     val jabatan: String,
     val hp: String
 )
+
+data class PersonaliaItem(
+    val id: String,
+    val kode: String,
+    val nama: String,
+    val jabatan: String,
+    val divisi: String,
+    val periode: String = "2026 - 2027",
+    val kontak: String = "",
+    val urutan: Int = 1
+)
+
+object FirqohFilterHelper {
+    const val GROUP_PREFIX = "GROUP:"
+
+    private val separators = listOf(" - ", " — ", " – ", ": ")
+    private val trailingTokenRegex = Regex(
+        """\s+(?:kelas\s+[\w.-]+|\d+[a-zA-Z]?|[IVX]+|[A-Z])$""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun extractCandidateGroup(f: FirqohItem): Pair<String, Boolean>? {
+        val rawName = f.nama.trim()
+        if (rawName.isBlank()) return null
+
+        for (sep in separators) {
+            val idx = rawName.indexOf(sep)
+            if (idx > 0) {
+                val prefix = rawName.substring(0, idx).trim()
+                if (prefix.isNotBlank() && !prefix.equals("firqoh", ignoreCase = true) && !prefix.last().isDigit()) {
+                    val wordCount = prefix.split(Regex("\\s+")).count { it.isNotBlank() }
+                    return prefix to (wordCount >= 2)
+                }
+                // Prefix ended with a digit (e.g. "Firqoh 1") -> not a multi-firqoh category unless stripped works below
+                return null
+            }
+        }
+
+        val stripped = rawName.replace(trailingTokenRegex, "").trim()
+        if (stripped != rawName && stripped.isNotBlank() && !stripped.equals("firqoh", ignoreCase = true)) {
+            val wordCount = stripped.split(Regex("\\s+")).count { it.isNotBlank() }
+            if (wordCount >= 2) {
+                return stripped to false
+            }
+        }
+        return null
+    }
+
+    fun buildGroupMap(firqohList: List<FirqohItem>): Map<String, List<FirqohItem>> {
+        val candidateGroups = linkedMapOf<String, Pair<String, MutableList<FirqohItem>>>()
+        val explicitSeparatorFlags = mutableSetOf<String>()
+
+        // 1. Group by Firqoh name prefix
+        firqohList.forEach { f ->
+            val cand = extractCandidateGroup(f) ?: return@forEach
+            val (label, hasExplicitSep) = cand
+            val key = label.lowercase()
+            val entry = candidateGroups.getOrPut(key) { label to mutableListOf() }
+            entry.second.add(f)
+            if (hasExplicitSep) explicitSeparatorFlags.add(key)
+        }
+
+        // 2. Also allow grouping by tingkat when >= 2 firqohs share exact non-blank tingkat not yet grouped
+        val groupedFirqohIds = candidateGroups.values
+            .filter { it.second.size >= 2 || it.first.lowercase() in explicitSeparatorFlags }
+            .flatMap { it.second.map { f -> f.id } }
+            .toSet()
+
+        firqohList
+            .filter { it.id !in groupedFirqohIds && it.tingkat.isNotBlank() }
+            .groupBy { it.tingkat.trim().lowercase() }
+            .forEach { (_, items) ->
+                if (items.size >= 2) {
+                    val rawTingkat = items.first().tingkat.trim()
+                    val groupLabel = if (rawTingkat.startsWith("firqoh", ignoreCase = true)) rawTingkat else "Firqoh $rawTingkat"
+                    val key = groupLabel.lowercase()
+                    if (key !in candidateGroups) {
+                        candidateGroups[key] = groupLabel to items.toMutableList()
+                    }
+                }
+            }
+
+        val result = linkedMapOf<String, List<FirqohItem>>()
+        candidateGroups.forEach { (key, pair) ->
+            val (displayName, items) = pair
+            if (items.size >= 2 || key in explicitSeparatorFlags) {
+                result[displayName] = items
+            }
+        }
+        return result
+    }
+
+    fun formatGroupFilterLabel(groupName: String, suffix: String? = null): String {
+        val clean = groupName.trim()
+        val base = if (clean.startsWith("firqoh", ignoreCase = true)) {
+            "Semua $clean"
+        } else {
+            "Semua Firqoh $clean"
+        }
+        return if (suffix.isNullOrBlank()) base else "$base ($suffix)"
+    }
+
+    fun buildFilterOptions(
+        firqohList: List<FirqohItem>,
+        santriList: List<SantriItem>,
+        includeAll: Boolean = true,
+        countBySantri: Boolean = false
+    ): List<Pair<String, String>> {
+        val options = mutableListOf<Pair<String, String>>()
+        if (includeAll) {
+            val allLabel = if (countBySantri) {
+                "Semua Firqoh (${santriList.size} Santri)"
+            } else {
+                "Semua Firqoh (${firqohList.size} Firqoh)"
+            }
+            options.add("ALL" to allLabel)
+        }
+
+        val groups = buildGroupMap(firqohList)
+        groups.forEach { (groupName, members) ->
+            val memberIds = members.map { it.id }.toSet()
+            val suffix = if (countBySantri) {
+                val sc = santriList.count { it.firqohId in memberIds }
+                "$sc Santri"
+            } else {
+                "${members.size} Firqoh"
+            }
+            options.add("$GROUP_PREFIX$groupName" to formatGroupFilterLabel(groupName, suffix))
+        }
+
+        firqohList.forEach { f ->
+            val label = if (countBySantri) {
+                val sc = santriList.count { it.firqohId == f.id }
+                "${f.nama} ($sc Santri)"
+            } else {
+                f.nama
+            }
+            options.add(f.id to label)
+        }
+        return options
+    }
+
+    fun matchesFilter(firqohId: String, filter: String, firqohList: List<FirqohItem>): Boolean {
+        if (filter.isBlank() || filter == "ALL") return true
+        if (filter.startsWith(GROUP_PREFIX)) {
+            val targetGroup = filter.removePrefix(GROUP_PREFIX).trim()
+            val groups = buildGroupMap(firqohList)
+            val members = groups.entries.firstOrNull { it.key.equals(targetGroup, ignoreCase = true) }?.value
+            if (members != null) {
+                return members.any { it.id == firqohId }
+            }
+            val firqoh = firqohList.firstOrNull { it.id == firqohId } ?: return false
+            return firqoh.nama.contains(targetGroup, ignoreCase = true) ||
+                firqoh.tingkat.equals(targetGroup, ignoreCase = true)
+        }
+        return firqohId == filter
+    }
+
+    fun getDisplayLabel(filter: String, firqohList: List<FirqohItem>): String {
+        if (filter.isBlank() || filter == "ALL") return "Semua Firqoh"
+        if (filter.startsWith(GROUP_PREFIX)) {
+            return formatGroupFilterLabel(filter.removePrefix(GROUP_PREFIX))
+        }
+        return firqohList.firstOrNull { it.id == filter }?.nama ?: filter
+    }
+}
 
 data class AbsensiRecord(
     val id: String,
@@ -316,6 +482,7 @@ data class MmqaDatabase(
     val suratTemplates: List<SuratTemplateItem> = emptyList(),
     val suratArsip: List<SuratArsipItem> = emptyList(),
     val inventaris: List<InventarisItem> = emptyList(),
+    val personalia: List<PersonaliaItem> = emptyList(),
     val chatChannels: List<ChatChannelItem> = emptyList(),
     val chatMessages: List<ChatMessageItem> = emptyList(),
     val adminConfig: AdminConfig = MmqaDefaults.defaultAdminConfig()
@@ -361,6 +528,10 @@ object MmqaDefaults {
         // Data Induk
         AnakSubConfigItem("induk_kelola", "induk", "santri", "Tambah & Edit Data Induk (Santri/Mu'allim/Dewan/Firqoh)", "dewan_harian", true),
         AnakSubConfigItem("induk_hapus", "induk", "santri", "Hapus Record Data Induk", "dewan_harian", true),
+        // Struktur Personalia MMQA
+        AnakSubConfigItem("personalia_manage", "personalia", "utama", "Tambah & Edit Struktur Personalia MMQA", "dewan_harian", true),
+        AnakSubConfigItem("personalia_delete", "personalia", "utama", "Hapus Pengurus Struktur Personalia", "dewan_harian", true),
+        AnakSubConfigItem("personalia_export", "personalia", "utama", "Kirim WA & Unduh PDF Struktur Personalia", "all", true),
         // Grup Chat
         AnakSubConfigItem("chat_send", "chat", "pesan", "Kirim Pesan Teks di Grup Chat", "all", true),
         AnakSubConfigItem("chat_attach", "chat", "pesan", "Kirim Lampiran PDF, Dokumen & Foto", "all", true),
@@ -379,8 +550,9 @@ object MmqaDefaults {
             MenuConfigItem("surat", "Surat Menyurat", "✉️", "all", true, 6),
             MenuConfigItem("inventaris", "Inventaris Modern", "🏛️", "all", true, 7),
             MenuConfigItem("induk", "Data Induk", "🗂️", "all", true, 8),
-            MenuConfigItem("chat", "Grup Chat Majelis", "💬", "all", true, 9),
-            MenuConfigItem("admin", "Kontrol Admin", "🛡️", "dewan_harian", true, 10)
+            MenuConfigItem("personalia", "Struktur Personalia MMQA", "🧑‍💼", "all", true, 9),
+            MenuConfigItem("chat", "Grup Chat Majelis", "💬", "all", true, 10),
+            MenuConfigItem("admin", "Kontrol Admin", "🛡️", "dewan_harian", true, 11)
         ),
         submenus = SubmenuGroups(
             absensi = listOf(
@@ -542,6 +714,13 @@ object MmqaDefaults {
                 InventarisItem("INV-01", "INV-AR2-001", "Papan Tulis Whiteboard Besar (240x120)", "Sarana Belajar", 4, "Unit", "Ruang Firqoh 1 - 4", "Baik", 3200000L, "Ust. Muhammad Ridwan", "Terpasang permanen di masing-masing ruang firqoh lengkap dengan rak spidol."),
                 InventarisItem("INV-02", "INV-AR2-002", "Kitab Referensi Perpustakaan Majelis", "Kitab & Literatur", 85, "Eksemplar", "Lemari Utama Majelis", "Baik", 6500000L, "Ust. Khoirul Anam", "Meliputi Fathul Qorib, Alfiyah, Tafsir Jalalain, dan kamus Al-Munawwir."),
                 InventarisItem("INV-03", "INV-AR2-003", "Sound System & Wireless Mic Majelis", "Elektronik", 2, "Set", "Aula Al-Rifai Lt. 1", "Perlu Perawatan", 4800000L, "Ust. Abdul Karim", "Satu unit mikrofon cadangan perlu penggantian baterai isi ulang.")
+            ),
+            personalia = listOf(
+                PersonaliaItem("PRS-01", "STR-01", "Ust. H. Ahmad Fauzi, M.Pd", "Ketua Dewan Harian MMQA", "Pimpinan & Dewan Harian", "2026 - 2027", "081122334401", 1),
+                PersonaliaItem("PRS-02", "STR-02", "Ust. Muhammad Ridwan", "Sekretaris Umum", "Kesekretariatan & Administrasi", "2026 - 2027", "081122334402", 2),
+                PersonaliaItem("PRS-03", "STR-03", "Ust. Abdul Karim", "Bendahara Majelis", "Keuangan & Syahriah", "2026 - 2027", "081122334403", 3),
+                PersonaliaItem("PRS-04", "STR-04", "Ust. Khoirul Anam", "Koordinator Kurikulum & Ujian", "Kurikulum & Pendidikan", "2026 - 2027", "081122334404", 4),
+                PersonaliaItem("PRS-05", "STR-05", "Ust. Zulkifli Hasan", "Koordinator Mu'allim Firqoh", "Koordinator Firqoh", "2026 - 2027", "085211002201", 5)
             ),
             chatChannels = listOf(
                 ChatChannelItem("CHN-UMUM", "Majelis Umum MMQA AR2", "Koordinasi seluruh Dewan Harian & Mu’allim"),

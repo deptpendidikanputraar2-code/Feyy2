@@ -10,6 +10,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -34,7 +35,7 @@ fun MateriScreen(
 ) {
     val canManage = viewModel.canAccessAnakSub("materi_manage")
     val allowDelete = db.adminConfig.permissions.allowDeleteRecords && viewModel.canAccessAnakSub("materi_delete")
-    val list = if (uiState.materiFirqoh == "ALL") db.materi else db.materi.filter { it.firqohId == uiState.materiFirqoh }
+    val list = db.materi.filter { viewModel.matchesFirqohFilter(it.firqohId, uiState.materiFirqoh) }
 
     var editingMateri by remember { mutableStateOf<MateriItem?>(null) }
     var showMateriModal by remember { mutableStateOf(false) }
@@ -46,10 +47,10 @@ fun MateriScreen(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            val options = listOf("ALL" to "Semua Firqoh") + db.firqoh.map { it.id to it.nama }
+            val options = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = false)
             CompactDropdownSelector(
                 label = "",
-                selectedText = options.firstOrNull { it.first == uiState.materiFirqoh }?.second ?: "Semua Firqoh",
+                selectedText = options.firstOrNull { it.first == uiState.materiFirqoh }?.second ?: viewModel.getFirqohFilterDisplayLabel(uiState.materiFirqoh),
                 options = options,
                 onSelect = { fid -> viewModel.updateState { it.copy(materiFirqoh = fid) } },
                 modifier = Modifier.weight(1f)
@@ -198,6 +199,7 @@ fun DataIndukScreen(
     uiState: MmqaUiState,
     viewModel: MmqaViewModel
 ) {
+    val context = LocalContext.current
     val canManage = viewModel.canAccessAnakSub("induk_kelola")
     val allowDelete = db.adminConfig.permissions.allowDeleteRecords && viewModel.canAccessAnakSub("induk_hapus")
     val enabledSubmenus = viewModel.getAccessibleSubmenus("induk")
@@ -254,11 +256,40 @@ fun DataIndukScreen(
         }
 
         val q = uiState.indukSearch.trim().lowercase()
+        val santriFirqohOptions = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = true)
+        val santriFilterLabel = viewModel.getFirqohFilterDisplayLabel(uiState.santriIndukFirqoh)
+
+        if (activeTab == "santri") {
+            CompactDropdownSelector(
+                label = "Filter Firqoh Data Santri",
+                selectedText = santriFirqohOptions.firstOrNull { it.first == uiState.santriIndukFirqoh }?.second ?: santriFilterLabel,
+                options = santriFirqohOptions,
+                onSelect = { fid -> viewModel.updateState { it.copy(santriIndukFirqoh = fid) } },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
         SectionCard {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (activeTab) {
                     "santri" -> {
-                        val list = db.santri.filter { q.isEmpty() || it.nama.lowercase().contains(q) || it.nis.contains(q) }
+                        val list = db.santri.filter {
+                            viewModel.matchesFirqohFilter(it.firqohId, uiState.santriIndukFirqoh) &&
+                                (q.isEmpty() || it.nama.lowercase().contains(q) || it.nis.contains(q))
+                        }
+                        WaPdfActionRow(
+                            onShareWa = {
+                                val msg = MmqaReportFormatters.buildDataSantriWa(db, santriFilterLabel, list)
+                                shareTextToWhatsApp(context, msg, "Kirim Data Santri ke WA")
+                            },
+                            onDownloadPdf = {
+                                val html = MmqaReportFormatters.buildDataSantriPdfHtml(db, santriFilterLabel, list)
+                                printHtmlDocument(context, "Data_Santri_MMQA_AR2", html)
+                            },
+                            waTestTag = "induk_santri_wa_btn",
+                            pdfTestTag = "induk_santri_pdf_btn"
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
                         list.forEach { s ->
                             IndukItemCard(
                                 code = "NIS ${s.nis}",
@@ -274,6 +305,19 @@ fun DataIndukScreen(
                     }
                     "muallim" -> {
                         val list = db.muallim.filter { q.isEmpty() || it.nama.lowercase().contains(q) || it.niy.lowercase().contains(q) }
+                        WaPdfActionRow(
+                            onShareWa = {
+                                val msg = MmqaReportFormatters.buildDataMuallimWa(db, list)
+                                shareTextToWhatsApp(context, msg, "Kirim Data Mu'allim ke WA")
+                            },
+                            onDownloadPdf = {
+                                val html = MmqaReportFormatters.buildDataMuallimPdfHtml(db, list)
+                                printHtmlDocument(context, "Data_Muallim_MMQA_AR2", html)
+                            },
+                            waTestTag = "induk_muallim_wa_btn",
+                            pdfTestTag = "induk_muallim_pdf_btn"
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
                         list.forEach { m ->
                             IndukItemCard(
                                 code = "NIY ${m.niy}",
@@ -289,6 +333,19 @@ fun DataIndukScreen(
                     }
                     "dewan" -> {
                         val list = db.dewanHarian.filter { q.isEmpty() || it.nama.lowercase().contains(q) }
+                        WaPdfActionRow(
+                            onShareWa = {
+                                val msg = MmqaReportFormatters.buildDataDewanWa(list)
+                                shareTextToWhatsApp(context, msg, "Kirim Data Dewan Harian ke WA")
+                            },
+                            onDownloadPdf = {
+                                val html = MmqaReportFormatters.buildDataDewanPdfHtml(list)
+                                printHtmlDocument(context, "Data_Dewan_Harian_MMQA_AR2", html)
+                            },
+                            waTestTag = "induk_dewan_wa_btn",
+                            pdfTestTag = "induk_dewan_pdf_btn"
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
                         list.forEach { d ->
                             IndukItemCard(
                                 code = d.kode,

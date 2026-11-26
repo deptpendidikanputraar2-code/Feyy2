@@ -424,6 +424,7 @@ private fun MmqaTopHeaderBar(
         "surat" -> "Surat Menyurat & Arsip" to "Pembuatan surat template PDF/teks & arsip Kode A/B/C"
         "inventaris" -> "Inventaris Modern" to "Pendataan sarana majelis, valuasi aset & kondisi"
         "induk" -> "Data Induk Terpadu" to "Master data santri, mu’allim, dewan harian & firqoh"
+        "personalia" -> "Struktur Personalia MMQA" to "Susunan kepengurusan, divisi & jabatan majelis"
         "chat" -> "Grup Chat Majelis" to "Komunikasi real-time dewan harian & mu’allim"
         "admin" -> "Kontrol Penuh Admin" to "Kelola menu, submenu, anak sub, akun & password rule"
         else -> "MMQA Al Rifai 02" to "Sistem Manajemen Majelis"
@@ -676,6 +677,7 @@ private fun MmqaMainContent(
                 "surat" -> SuratScreen(db, uiState, viewModel, isWideScreen, onPickPdfTemplate)
                 "inventaris" -> InventarisScreen(db, uiState, viewModel, isWideScreen, onExportCsv)
                 "induk" -> DataIndukScreen(db, uiState, viewModel)
+                "personalia" -> PersonaliaScreen(db, uiState, viewModel, isWideScreen)
                 "chat" -> ChatScreen(
                     db = db,
                     uiState = uiState,

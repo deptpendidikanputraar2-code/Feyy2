@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -32,6 +33,7 @@ fun DashboardScreen(
     viewModel: MmqaViewModel,
     isWideScreen: Boolean
 ) {
+    val context = LocalContext.current
     val santriStats = viewModel.calcAttendanceStats("santri", null, uiState.dashFirqohFilter)
     val muallimStats = viewModel.calcAttendanceStats("muallim")
     val dewanStats = viewModel.calcAttendanceStats("dewan_harian")
@@ -40,11 +42,8 @@ fun DashboardScreen(
     val pengeluaran = db.keuangan.filter { it.jenis == "pengeluaran" }.sumOf { it.nominal }
     val saldoKas = pemasukan - pengeluaran
 
-    val filteredSantri = if (uiState.dashFirqohFilter == "ALL") {
-        db.santri
-    } else {
-        db.santri.filter { it.firqohId == uiState.dashFirqohFilter }
-    }
+    val filteredSantri = db.santri.filter { viewModel.matchesFirqohFilter(it.firqohId, uiState.dashFirqohFilter) }
+    val dashFilterLabel = viewModel.getFirqohFilterDisplayLabel(uiState.dashFirqohFilter)
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         // 4 Kartu Metrik Utama
@@ -138,6 +137,23 @@ fun DashboardScreen(
                 fontWeight = FontWeight.Black,
                 color = Slate900
             )
+            Spacer(modifier = Modifier.height(10.dp))
+            WaPdfActionRow(
+                onShareWa = {
+                    val msg = MmqaReportFormatters.buildDashboardFirqohWa(db) { f ->
+                        viewModel.calcAttendanceStats("santri", null, f.id)
+                    }
+                    shareTextToWhatsApp(context, msg, "Kirim Rekapan Per Firqoh")
+                },
+                onDownloadPdf = {
+                    val html = MmqaReportFormatters.buildDashboardFirqohPdfHtml(db) { f ->
+                        viewModel.calcAttendanceStats("santri", null, f.id)
+                    }
+                    printHtmlDocument(context, "Rekapan_Kehadiran_Per_Firqoh", html)
+                },
+                waTestTag = "dash_firqoh_wa_btn",
+                pdfTestTag = "dash_firqoh_pdf_btn"
+            )
             Spacer(modifier = Modifier.height(12.dp))
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 db.firqoh.chunked(if (isWideScreen) 2 else 1).forEach { rowItems ->
@@ -219,14 +235,34 @@ fun DashboardScreen(
                 }
             }
             Spacer(modifier = Modifier.height(10.dp))
-            val firqohOptions = listOf("ALL" to "Semua Firqoh (${db.santri.size} Santri)") +
-                db.firqoh.map { it.id to it.nama }
+            val firqohOptions = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = true)
             CompactDropdownSelector(
                 label = "",
-                selectedText = firqohOptions.firstOrNull { it.first == uiState.dashFirqohFilter }?.second ?: "Semua Firqoh",
+                selectedText = firqohOptions.firstOrNull { it.first == uiState.dashFirqohFilter }?.second ?: dashFilterLabel,
                 options = firqohOptions,
                 onSelect = { selected -> viewModel.updateState { it.copy(dashFirqohFilter = selected) } },
                 modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            WaPdfActionRow(
+                onShareWa = {
+                    val msg = MmqaReportFormatters.buildDashboardSantriWa(
+                        db = db,
+                        filterLabel = dashFilterLabel,
+                        santriList = filteredSantri
+                    ) { s -> viewModel.calcAttendanceStats("santri", s.id) }
+                    shareTextToWhatsApp(context, msg, "Kirim Rekapan Santri")
+                },
+                onDownloadPdf = {
+                    val html = MmqaReportFormatters.buildDashboardSantriPdfHtml(
+                        db = db,
+                        filterLabel = dashFilterLabel,
+                        santriList = filteredSantri
+                    ) { s -> viewModel.calcAttendanceStats("santri", s.id) }
+                    printHtmlDocument(context, "Rekapan_Kehadiran_Santri", html)
+                },
+                waTestTag = "dash_santri_wa_btn",
+                pdfTestTag = "dash_santri_pdf_btn"
             )
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -285,6 +321,23 @@ fun DashboardScreen(
                     color = Slate500
                 )
                 Spacer(modifier = Modifier.height(10.dp))
+                WaPdfActionRow(
+                    onShareWa = {
+                        val msg = MmqaReportFormatters.buildDashboardMuallimWa(db) { m ->
+                            viewModel.calcAttendanceStats("muallim", m.id)
+                        }
+                        shareTextToWhatsApp(context, msg, "Kirim Rekapan Mu'allim")
+                    },
+                    onDownloadPdf = {
+                        val html = MmqaReportFormatters.buildDashboardMuallimPdfHtml(db) { m ->
+                            viewModel.calcAttendanceStats("muallim", m.id)
+                        }
+                        printHtmlDocument(context, "Rekapan_Kehadiran_Muallim", html)
+                    },
+                    waTestTag = "dash_muallim_wa_btn",
+                    pdfTestTag = "dash_muallim_pdf_btn"
+                )
+                Spacer(modifier = Modifier.height(10.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     db.muallim.forEach { m ->
                         val st = viewModel.calcAttendanceStats("muallim", m.id)
@@ -337,6 +390,23 @@ fun DashboardScreen(
                     text = "Rekapan piket & kehadiran pengurus Dewan Harian",
                     fontSize = 11.sp,
                     color = Slate500
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                WaPdfActionRow(
+                    onShareWa = {
+                        val msg = MmqaReportFormatters.buildDashboardDewanWa(db) { d ->
+                            viewModel.calcAttendanceStats("dewan_harian", d.id)
+                        }
+                        shareTextToWhatsApp(context, msg, "Kirim Rekapan Dewan Harian")
+                    },
+                    onDownloadPdf = {
+                        val html = MmqaReportFormatters.buildDashboardDewanPdfHtml(db) { d ->
+                            viewModel.calcAttendanceStats("dewan_harian", d.id)
+                        }
+                        printHtmlDocument(context, "Rekapan_Kehadiran_Dewan_Harian", html)
+                    },
+                    waTestTag = "dash_dewan_wa_btn",
+                    pdfTestTag = "dash_dewan_pdf_btn"
                 )
                 Spacer(modifier = Modifier.height(10.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -126,10 +126,11 @@ fun AbsensiScreen(
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
                     if (activeTab == "santri") {
+                        val firqohOptions = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = true)
                         CompactDropdownSelector(
                             label = "Pilih Firqoh",
-                            selectedText = viewModel.getFirqohName(uiState.absensiFirqoh),
-                            options = db.firqoh.map { it.id to it.nama },
+                            selectedText = firqohOptions.firstOrNull { it.first == uiState.absensiFirqoh }?.second ?: viewModel.getFirqohName(uiState.absensiFirqoh),
+                            options = firqohOptions,
                             onSelect = { fid -> viewModel.updateState { it.copy(absensiFirqoh = fid) } },
                             modifier = Modifier.weight(1f)
                         )
@@ -172,9 +173,9 @@ fun AbsensiScreen(
             Spacer(modifier = Modifier.height(14.dp))
 
             val rows: List<AbsensiRowUi> = when (activeTab) {
-                "santri" -> db.santri.filter { it.firqohId == uiState.absensiFirqoh }.map { s ->
+                "santri" -> db.santri.filter { viewModel.matchesFirqohFilter(it.firqohId, uiState.absensiFirqoh) }.map { s ->
                     val rec = viewModel.getAbsensiRecord("santri", s.id)
-                    AbsensiRowUi("santri", s.id, s.firqohId, s.nama, "NIS: ${s.nis} • Wali: ${s.wali}", rec?.status ?: "", rec?.catatan ?: "")
+                    AbsensiRowUi("santri", s.id, s.firqohId, s.nama, "NIS: ${s.nis} • ${viewModel.getFirqohName(s.firqohId)} • Wali: ${s.wali}", rec?.status ?: "", rec?.catatan ?: "")
                 }
                 "muallim" -> db.muallim.map { m ->
                     val rec = viewModel.getAbsensiRecord("muallim", m.id)

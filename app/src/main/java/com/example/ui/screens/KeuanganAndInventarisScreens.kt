@@ -194,7 +194,7 @@ fun KeuanganScreen(
                 }
             }
         } else {
-            val listSantri = if (uiState.syahriahFirqoh == "ALL") db.santri else db.santri.filter { it.firqohId == uiState.syahriahFirqoh }
+            val listSantri = db.santri.filter { viewModel.matchesFirqohFilter(it.firqohId, uiState.syahriahFirqoh) }
             SectionCard {
                 Text("💳 Kontrol Pembayaran Syahriah Santri", fontSize = 14.sp, fontWeight = FontWeight.Black, color = Slate900)
                 Text(
@@ -203,10 +203,10 @@ fun KeuanganScreen(
                     color = Slate500
                 )
                 Spacer(modifier = Modifier.height(10.dp))
-                val firqohOptions = listOf("ALL" to "Semua Firqoh") + db.firqoh.map { it.id to it.nama }
+                val firqohOptions = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = true)
                 CompactDropdownSelector(
                     label = "",
-                    selectedText = firqohOptions.firstOrNull { it.first == uiState.syahriahFirqoh }?.second ?: "Semua Firqoh",
+                    selectedText = firqohOptions.firstOrNull { it.first == uiState.syahriahFirqoh }?.second ?: viewModel.getFirqohFilterDisplayLabel(uiState.syahriahFirqoh),
                     options = firqohOptions,
                     onSelect = { fid -> viewModel.updateState { it.copy(syahriahFirqoh = fid) } }
                 )

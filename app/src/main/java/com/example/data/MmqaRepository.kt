@@ -369,6 +369,7 @@ class MmqaRepository(private val context: Context) {
                 "suratTemplates" -> acc.copy(suratTemplates = mergeCollection(acc.suratTemplates, local.suratTemplates, m) { it.id })
                 "suratArsip" -> acc.copy(suratArsip = mergeCollection(acc.suratArsip, local.suratArsip, m) { it.id })
                 "inventaris" -> acc.copy(inventaris = mergeCollection(acc.inventaris, local.inventaris, m) { it.id })
+                "personalia" -> acc.copy(personalia = mergeCollection(acc.personalia, local.personalia, m) { it.id })
                 "chatChannels" -> acc.copy(chatChannels = mergeCollection(acc.chatChannels, local.chatChannels, m) { it.id })
                 "chatMessages" -> acc.copy(chatMessages = mergeCollection(acc.chatMessages, local.chatMessages, m) { it.id })
                 "adminConfig" -> acc.copy(adminConfig = local.adminConfig)

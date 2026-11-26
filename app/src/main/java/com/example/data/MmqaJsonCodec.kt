@@ -52,6 +52,7 @@ object MmqaJsonCodec {
         p.put("suratTemplates", JSONArray().apply { db.suratTemplates.forEach { put(encodeSuratTemplate(it)) } })
         p.put("suratArsip", JSONArray().apply { db.suratArsip.forEach { put(encodeSuratArsip(it)) } })
         p.put("inventaris", JSONArray().apply { db.inventaris.forEach { put(encodeInventaris(it)) } })
+        p.put("personalia", JSONArray().apply { db.personalia.forEach { put(encodePersonalia(it)) } })
         p.put("chatChannels", JSONArray().apply { db.chatChannels.forEach { put(encodeChatChannel(it)) } })
         p.put("chatMessages", JSONArray().apply { db.chatMessages.forEach { put(encodeChatMessage(it)) } })
         p.put("adminConfig", JSONArray().apply {
@@ -88,6 +89,7 @@ object MmqaJsonCodec {
         val suratTplArr = remote.optJSONArray("suratTemplates")
         val suratArsipArr = remote.optJSONArray("suratArsip")
         val inventarisArr = remote.optJSONArray("inventaris")
+        val personaliaArr = remote.optJSONArray("personalia")
         val chatChArr = remote.optJSONArray("chatChannels")
         val chatMsgArr = remote.optJSONArray("chatMessages")
 
@@ -117,6 +119,7 @@ object MmqaJsonCodec {
             suratTemplates = if (suratTplArr != null && suratTplArr.length() > 0) decodeList(suratTplArr, ::decodeSuratTemplate) else base.suratTemplates,
             suratArsip = if (suratArsipArr != null && suratArsipArr.length() > 0) decodeList(suratArsipArr, ::decodeSuratArsip) else base.suratArsip,
             inventaris = if (inventarisArr != null && inventarisArr.length() > 0) decodeList(inventarisArr, ::decodeInventaris) else base.inventaris,
+            personalia = if (personaliaArr != null && personaliaArr.length() > 0) decodeList(personaliaArr, ::decodePersonalia) else base.personalia,
             chatChannels = if (chatChArr != null && chatChArr.length() > 0) decodeList(chatChArr, ::decodeChatChannel) else base.chatChannels,
             chatMessages = if (chatMsgArr != null && chatMsgArr.length() > 0) decodeList(chatMsgArr, ::decodeChatMessage) else base.chatMessages,
             adminConfig = parsedAdminConfig
@@ -499,6 +502,28 @@ object MmqaJsonCodec {
         keterangan = o.optString("keterangan")
     )
 
+    private fun encodePersonalia(p: PersonaliaItem) = JSONObject().apply {
+        put("id", p.id)
+        put("kode", p.kode)
+        put("nama", p.nama)
+        put("jabatan", p.jabatan)
+        put("divisi", p.divisi)
+        put("periode", p.periode)
+        put("kontak", p.kontak)
+        put("urutan", p.urutan)
+    }
+
+    private fun decodePersonalia(o: JSONObject) = PersonaliaItem(
+        id = o.optString("id"),
+        kode = o.optString("kode"),
+        nama = o.optString("nama"),
+        jabatan = o.optString("jabatan"),
+        divisi = o.optString("divisi", "Pengurus MMQA"),
+        periode = o.optString("periode", "2026 - 2027"),
+        kontak = o.optString("kontak", ""),
+        urutan = o.optInt("urutan", 1)
+    )
+
     private fun encodeChatChannel(c: ChatChannelItem) = JSONObject().apply {
         put("id", c.id)
         put("name", c.name)
@@ -638,7 +663,7 @@ object MmqaJsonCodec {
     private fun decodeAdminConfig(o: JSONObject, fallback: AdminConfig): AdminConfig {
         val menusArr = o.optJSONArray("menus")
         val menus = if (menusArr != null && menusArr.length() > 0) {
-            decodeList(menusArr) { m ->
+            val decoded = decodeList(menusArr) { m ->
                 MenuConfigItem(
                     id = m.optString("id"),
                     label = m.optString("label"),
@@ -648,6 +673,9 @@ object MmqaJsonCodec {
                     order = m.optInt("order", 99)
                 )
             }
+            val existingMenuIds = decoded.map { it.id }.toSet()
+            val missingDefaultMenus = MmqaDefaults.defaultAdminConfig().menus.filter { it.id !in existingMenuIds }
+            (decoded + missingDefaultMenus).sortedBy { it.order }
         } else fallback.menus
 
         val subObj = o.optJSONObject("submenus")

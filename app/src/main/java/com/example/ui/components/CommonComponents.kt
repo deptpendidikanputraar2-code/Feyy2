@@ -1,12 +1,14 @@
 package com.example.ui.components
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.print.PrintAttributes
 import android.print.PrintManager
 import android.util.Base64
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -23,6 +25,8 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -803,6 +807,108 @@ fun NotificationInboxDialog(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun WaPdfActionRow(
+    onShareWa: () -> Unit,
+    onDownloadPdf: () -> Unit,
+    modifier: Modifier = Modifier,
+    waLabel: String = "Kirim ke WA",
+    pdfLabel: String = "Unduh PDF",
+    waTestTag: String = "share_wa_button",
+    pdfTestTag: String = "download_pdf_button"
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Button(
+            onClick = onShareWa,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Emerald700,
+                contentColor = Color.White
+            ),
+            shape = RoundedCornerShape(12.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier
+                .weight(1f)
+                .defaultMinSize(minHeight = 44.dp)
+                .testTag(waTestTag)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Share,
+                contentDescription = waLabel,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = waLabel,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        OutlinedButton(
+            onClick = onDownloadPdf,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, Rose200),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = Rose50,
+                contentColor = Rose800
+            ),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier
+                .weight(1f)
+                .defaultMinSize(minHeight = 44.dp)
+                .testTag(pdfTestTag)
+        ) {
+            Icon(
+                imageVector = Icons.Default.PictureAsPdf,
+                contentDescription = pdfLabel,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = pdfLabel,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+fun shareTextToWhatsApp(context: Context, text: String, title: String = "Kirim ke WhatsApp") {
+    val pm = context.packageManager
+    val waPackages = listOf("com.whatsapp", "com.whatsapp.w4b")
+    val targetPackage = waPackages.firstOrNull { pkg ->
+        runCatching { pm.getPackageInfo(pkg, 0) }.isSuccess
+    }
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+        if (targetPackage != null) setPackage(targetPackage)
+    }
+    runCatching {
+        if (targetPackage != null) {
+            context.startActivity(intent)
+        } else {
+            context.startActivity(Intent.createChooser(intent, title))
+        }
+    }.onFailure {
+        val fallback = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        runCatching {
+            context.startActivity(Intent.createChooser(fallback, title))
+        }.onFailure {
+            Toast.makeText(context, "Tidak ada aplikasi untuk membagikan pesan.", Toast.LENGTH_SHORT).show()
         }
     }
 }

@@ -55,6 +55,7 @@ data class MmqaUiState(
     val inventarisFilter: String = "ALL",
     val indukTab: String = "santri",
     val indukSearch: String = "",
+    val santriIndukFirqoh: String = "ALL",
     val chatChannel: String = "CHN-UMUM",
     val chatSearch: String = "",
     val chatReplyTo: ChatReplyRef? = null,
@@ -313,9 +314,31 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun getFirqohName(firqohId: String): String {
-        if (firqohId.isBlank()) return "Semua Firqoh"
+        if (firqohId.isBlank() || firqohId == "ALL") return "Semua Firqoh"
+        if (firqohId.startsWith(FirqohFilterHelper.GROUP_PREFIX)) {
+            return FirqohFilterHelper.getDisplayLabel(firqohId, database.value.firqoh)
+        }
         return database.value.firqoh.firstOrNull { it.id == firqohId }?.nama ?: firqohId
     }
+
+    fun buildFirqohFilterOptions(
+        includeAll: Boolean = true,
+        countBySantri: Boolean = false
+    ): List<Pair<String, String>> {
+        val db = database.value
+        return FirqohFilterHelper.buildFilterOptions(
+            firqohList = db.firqoh,
+            santriList = db.santri,
+            includeAll = includeAll,
+            countBySantri = countBySantri
+        )
+    }
+
+    fun matchesFirqohFilter(firqohId: String, filter: String): Boolean =
+        FirqohFilterHelper.matchesFilter(firqohId, filter, database.value.firqoh)
+
+    fun getFirqohFilterDisplayLabel(filter: String): String =
+        FirqohFilterHelper.getDisplayLabel(filter, database.value.firqoh)
 
     // =========================================================================
     // DASHBOARD CALCULATIONS
@@ -323,7 +346,9 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
     fun calcAttendanceStats(tipe: String, targetId: String? = null, firqohId: String? = null): AttendanceStats {
         var logs = database.value.absensi.filter { it.tipe == tipe }
         if (targetId != null) logs = logs.filter { it.targetId == targetId }
-        if (firqohId != null && firqohId != "ALL") logs = logs.filter { it.firqohId == firqohId }
+        if (firqohId != null && firqohId != "ALL") {
+            logs = logs.filter { matchesFirqohFilter(it.firqohId, firqohId) }
+        }
         val hadir = logs.count { it.status == "Hadir" }
         val izin = logs.count { it.status == "Izin" }
         val sakit = logs.count { it.status == "Sakit" }
@@ -393,7 +418,7 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         val st = _uiState.value
         val db = database.value
         val targets: List<Pair<String, String>> = when (tipe) {
-            "santri" -> db.santri.filter { it.firqohId == st.absensiFirqoh }.map { it.id to it.firqohId }
+            "santri" -> db.santri.filter { matchesFirqohFilter(it.firqohId, st.absensiFirqoh) }.map { it.id to it.firqohId }
             "muallim" -> db.muallim.map { it.id to it.firqohId }
             else -> db.dewanHarian.map { it.id to "" }
         }
@@ -825,6 +850,106 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
                 else -> db.copy(firqoh = db.firqoh.filterNot { it.id == id })
             }
         }
+    }
+
+    // =========================================================================
+    // STRUKTUR PERSONALIA MMQA ACTIONS
+    // =========================================================================
+    fun savePersonalia(
+        id: String?,
+        kode: String,
+        nama: String,
+        jabatan: String,
+        divisi: String,
+        periode: String,
+        kontak: String,
+        urutan: Int
+    ) {
+        val itemId = id?.takeIf { it.isNotBlank() } ?: "PRS-${System.currentTimeMillis()}"
+        val item = PersonaliaItem(
+            id = itemId,
+            kode = kode.trim(),
+            nama = nama.trim(),
+            jabatan = jabatan.trim(),
+            divisi = divisi.trim().ifBlank { "Pengurus MMQA" },
+            periode = periode.trim().ifBlank { "2026 - 2027" },
+            kontak = kontak.trim(),
+            urutan = urutan.coerceAtLeast(1)
+        )
+        repository.mutate(listOf(PendingMutation("personalia", itemId, "upsert"))) { db ->
+            val list = db.personalia.toMutableList()
+            val idx = list.indexOfFirst { it.id == itemId }
+            if (idx >= 0) list[idx] = item else list.add(item)
+            db.copy(personalia = list.sortedWith(compareBy<PersonaliaItem> { it.urutan }.thenBy { it.nama }))
+        }
+        showToast("Struktur Personalia MMQA berhasil disimpan!")
+    }
+
+    fun deletePersonalia(id: String) {
+        repository.mutate(listOf(PendingMutation("personalia", id, "delete"))) { db ->
+            db.copy(personalia = db.personalia.filterNot { it.id == id })
+        }
+        showToast("Personalia dihapus dari struktur.")
+    }
+
+    fun syncPersonaliaFromDataInduk() {
+        val db = database.value
+        val existingNames = db.personalia.map { it.nama.trim().lowercase() }.toMutableSet()
+        val added = mutableListOf<PersonaliaItem>()
+        val mutations = mutableListOf<PendingMutation>()
+        var nextOrder = (db.personalia.maxOfOrNull { it.urutan } ?: 0) + 1
+        var idxCounter = db.personalia.size + 1
+
+        db.dewanHarian.forEach { d ->
+            val key = d.nama.trim().lowercase()
+            if (key.isNotBlank() && key !in existingNames) {
+                existingNames.add(key)
+                val newId = "PRS-DH-${d.id}"
+                val item = PersonaliaItem(
+                    id = newId,
+                    kode = d.kode.ifBlank { "STR-$idxCounter" },
+                    nama = d.nama,
+                    jabatan = d.jabatan.ifBlank { "Dewan Harian MMQA" },
+                    divisi = "Pimpinan & Dewan Harian",
+                    periode = "2026 - 2027",
+                    kontak = d.hp,
+                    urutan = nextOrder++
+                )
+                added.add(item)
+                mutations.add(PendingMutation("personalia", newId, "upsert"))
+                idxCounter++
+            }
+        }
+
+        db.muallim.forEach { m ->
+            val key = m.nama.trim().lowercase()
+            if (key.isNotBlank() && key !in existingNames) {
+                existingNames.add(key)
+                val newId = "PRS-MLM-${m.id}"
+                val item = PersonaliaItem(
+                    id = newId,
+                    kode = m.niy.ifBlank { "STR-$idxCounter" },
+                    nama = m.nama,
+                    jabatan = "Mu'allim ${getFirqohName(m.firqohId)}",
+                    divisi = "Mu'allim Firqoh",
+                    periode = "2026 - 2027",
+                    kontak = m.hp,
+                    urutan = nextOrder++
+                )
+                added.add(item)
+                mutations.add(PendingMutation("personalia", newId, "upsert"))
+                idxCounter++
+            }
+        }
+
+        if (added.isEmpty()) {
+            showToast("Semua Dewan Harian & Mu'allim sudah ada di Struktur Personalia.")
+            return
+        }
+        repository.mutate(mutations) { cur ->
+            cur.copy(personalia = (cur.personalia + added).sortedWith(compareBy<PersonaliaItem> { it.urutan }.thenBy { it.nama }))
+        }
+        showToast("${added.size} pengurus/mu'allim berhasil ditarik ke Struktur Personalia!")
     }
 
     // =========================================================================

@@ -49,6 +49,7 @@ private fun menuLabelOf(menuId: String): String = when (menuId) {
     "surat" -> "Surat"
     "inventaris" -> "Inventaris"
     "induk" -> "Data Induk"
+    "personalia" -> "Struktur Personalia"
     "chat" -> "Grup Chat"
     else -> menuId
 }
@@ -253,7 +254,7 @@ fun AdminScreen(
             // LEVEL 3: KELOLA AKSES ANAK SUB (FITUR & AKSI GRANULAR)
             // =================================================================
             "anaksub" -> {
-                val menuKeys = listOf("ALL", "absensi", "materi", "ujian", "keuangan", "surat", "inventaris", "induk", "chat")
+                val menuKeys = listOf("ALL", "absensi", "materi", "ujian", "keuangan", "surat", "inventaris", "induk", "personalia", "chat")
                 val filteredAnakSub = if (anakSubMenuFilter == "ALL") {
                     cfg.anakSub
                 } else {
