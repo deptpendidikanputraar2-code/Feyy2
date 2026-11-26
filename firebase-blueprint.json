@@ -1,0 +1,104 @@
+{
+  "entities": {
+    "UserNotification": {
+      "title": "UserNotification",
+      "description": "Notifikasi real-time majelis (chat baru, absensi, ujian, keuangan, sistem) milik pengguna terautentikasi",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID Firebase pengguna pemilik notifikasi"
+        },
+        "title": {
+          "type": "string",
+          "description": "Judul notifikasi"
+        },
+        "body": {
+          "type": "string",
+          "description": "Isi ringkas notifikasi"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["chat", "absensi", "ujian", "keuangan", "system"],
+          "description": "Kategori notifikasi"
+        },
+        "channelId": {
+          "type": "string",
+          "description": "ID channel chat terkait (opsional)"
+        },
+        "read": {
+          "type": "boolean",
+          "description": "Status sudah dibaca"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) saat dibuat"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) saat diperbarui"
+        }
+      },
+      "required": ["userId", "title", "body", "category", "read", "createdAt", "updatedAt"]
+    },
+    "UserCloudProfile": {
+      "title": "UserCloudProfile",
+      "description": "Profil sinkronisasi cloud pengguna antara Firebase, Supabase, dan akun peran MMQA",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID Firebase pengguna"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Nama tampilan akun"
+        },
+        "mmqaRole": {
+          "type": "string",
+          "enum": ["dewan_harian", "muallim"],
+          "description": "Peran pengguna pada MMQA AR2"
+        },
+        "mmqaUsername": {
+          "type": "string",
+          "description": "Username MMQA yang tertaut"
+        },
+        "notificationsEnabled": {
+          "type": "boolean",
+          "description": "Status aktif notifikasi"
+        },
+        "lastSyncedSource": {
+          "type": "string",
+          "description": "Sumber sinkronisasi cloud terakhir"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp())"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp())"
+        }
+      },
+      "required": ["userId", "displayName", "mmqaRole", "mmqaUsername", "notificationsEnabled", "lastSyncedSource", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": {
+        "$ref": "#/entities/UserNotification"
+      },
+      "description": "Kotak masuk notifikasi real-time per pengguna"
+    },
+    "/users/{userId}/sync_profiles/{profileId}": {
+      "schema": {
+        "$ref": "#/entities/UserCloudProfile"
+      },
+      "description": "Profil tautan cloud & preferensi notifikasi per pengguna"
+    }
+  }
+}

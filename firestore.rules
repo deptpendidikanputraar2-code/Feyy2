@@ -1,0 +1,91 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidNotification(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.body is string && data.body.size() >= 1 && data.body.size() <= 500 &&
+             data.category in ['chat', 'absensi', 'ujian', 'keuangan', 'system'] &&
+             (!('channelId' in data) || (data.channelId is string && data.channelId.size() <= 64)) &&
+             data.read is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidSyncProfile(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+             data.mmqaRole in ['dewan_harian', 'muallim'] &&
+             data.mmqaUsername is string && data.mmqaUsername.size() >= 1 && data.mmqaUsername.size() <= 64 &&
+             data.notificationsEnabled is bool &&
+             data.lastSyncedSource is string && data.lastSyncedSource.size() >= 1 && data.lastSyncedSource.size() <= 64 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /users/{userId}/notifications/{notificationId} {
+      allow get: if isOwner(userId) && isValidId(notificationId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(notificationId) &&
+                       incoming().keys().hasAll(['userId', 'title', 'body', 'category', 'read', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'title', 'body', 'category', 'channelId', 'read', 'createdAt', 'updatedAt']) &&
+                       isValidNotification(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(notificationId) &&
+                       isValidNotification(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['read', 'title', 'body', 'updatedAt']);
+
+      allow delete: if isOwner(userId) && isValidId(notificationId);
+    }
+
+    match /users/{userId}/sync_profiles/{profileId} {
+      allow get: if isOwner(userId) && isValidId(profileId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(profileId) &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'mmqaRole', 'mmqaUsername', 'notificationsEnabled', 'lastSyncedSource', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'mmqaRole', 'mmqaUsername', 'notificationsEnabled', 'lastSyncedSource', 'createdAt', 'updatedAt']) &&
+                       isValidSyncProfile(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(profileId) &&
+                       isValidSyncProfile(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'mmqaRole', 'mmqaUsername', 'notificationsEnabled', 'lastSyncedSource', 'updatedAt']);
+
+      allow delete: if isOwner(userId) && isValidId(profileId);
+    }
+  }
+}

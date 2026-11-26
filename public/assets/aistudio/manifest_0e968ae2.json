@@ -1,0 +1,36 @@
+{
+  "name": "MMQA AL RIFAI 02 - Sistem Manajemen & Absensi",
+  "short_name": "MMQA AR2",
+  "description": "Progressive Web App Manajemen Pendidikan, Absensi Perfirqoh, Ujian, Keuangan, Surat Menyurat, Inventaris & Majelis Chat MMQA Al Rifai 02",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f8fafc",
+  "theme_color": "#083b29",
+  "lang": "id-ID",
+  "categories": [
+    "education",
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

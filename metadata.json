@@ -1,0 +1,6 @@
+{
+  "name": "MMQA AR2",
+  "description": "Sistem Manajemen, Absensi Bertingkat, Ujian, Keuangan, Surat Menyurat, Inventaris & Majelis Chat MMQA Al Rifai 02 terintegrasi Google Sheets",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
