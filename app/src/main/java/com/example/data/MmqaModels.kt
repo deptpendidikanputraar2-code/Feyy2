@@ -245,6 +245,15 @@ object FirqohFilterHelper {
 
     fun matchesFilter(firqohId: String, filter: String, firqohList: List<FirqohItem>): Boolean {
         if (filter.isBlank() || filter == "ALL") return true
+        if (firqohId == filter) return true
+        if (firqohId == "ALL") return true
+        if (firqohId.startsWith(GROUP_PREFIX)) {
+            if (filter.startsWith(GROUP_PREFIX)) {
+                return firqohId.removePrefix(GROUP_PREFIX).trim()
+                    .equals(filter.removePrefix(GROUP_PREFIX).trim(), ignoreCase = true)
+            }
+            return matchesFilter(filter, firqohId, firqohList)
+        }
         if (filter.startsWith(GROUP_PREFIX)) {
             val targetGroup = filter.removePrefix(GROUP_PREFIX).trim()
             val groups = buildGroupMap(firqohList)
@@ -256,7 +265,7 @@ object FirqohFilterHelper {
             return firqoh.nama.contains(targetGroup, ignoreCase = true) ||
                 firqoh.tingkat.equals(targetGroup, ignoreCase = true)
         }
-        return firqohId == filter
+        return false
     }
 
     fun getDisplayLabel(filter: String, firqohList: List<FirqohItem>): String {

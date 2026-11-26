@@ -60,5 +60,13 @@ class ExampleUnitTest {
         assertTrue(FirqohFilterHelper.matchesFilter("F3", "GROUP:Firqoh Jet Tempur", firqohs))
         assertTrue(FirqohFilterHelper.matchesFilter("F1", "ALL", firqohs))
         assertEquals("Semua Firqoh Seleksi", FirqohFilterHelper.getDisplayLabel("GROUP:Firqoh Seleksi", firqohs))
+        // Item yang disimpan langsung untuk grup atau semua firqoh
+        assertTrue(FirqohFilterHelper.matchesFilter("GROUP:Firqoh Seleksi", "ALL", firqohs))
+        assertTrue(FirqohFilterHelper.matchesFilter("GROUP:Firqoh Seleksi", "GROUP:Firqoh Seleksi", firqohs))
+        assertTrue(FirqohFilterHelper.matchesFilter("GROUP:Firqoh Seleksi", "F1", firqohs))
+        assertFalse(FirqohFilterHelper.matchesFilter("GROUP:Firqoh Seleksi", "F3", firqohs))
+        assertFalse(FirqohFilterHelper.matchesFilter("GROUP:Firqoh Seleksi", "GROUP:Firqoh Jet Tempur", firqohs))
+        assertTrue(FirqohFilterHelper.matchesFilter("ALL", "F3", firqohs))
+        assertTrue(FirqohFilterHelper.matchesFilter("ALL", "GROUP:Firqoh Jet Tempur", firqohs))
     }
 }

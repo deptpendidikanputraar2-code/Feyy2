@@ -478,8 +478,16 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
     // =========================================================================
     // UJIAN ACTIONS
     // =========================================================================
-    fun getKkmForFirqoh(firqohId: String): Int =
-        database.value.ujianMateri.firstOrNull { it.firqohId == firqohId }?.kkm ?: 75
+    fun getKkmForFirqoh(firqohId: String): Int {
+        val db = database.value
+        db.ujianMateri.firstOrNull { it.firqohId == firqohId }?.let { return it.kkm }
+        db.ujianMateri.firstOrNull {
+            it.firqohId.startsWith(FirqohFilterHelper.GROUP_PREFIX) &&
+                FirqohFilterHelper.matchesFilter(firqohId, it.firqohId, db.firqoh)
+        }?.let { return it.kkm }
+        db.ujianMateri.firstOrNull { it.firqohId == "ALL" }?.let { return it.kkm }
+        return 75
+    }
 
     fun toggleSantriPesertaUjian(santriId: String) {
         val s = database.value.santri.firstOrNull { it.id == santriId } ?: return

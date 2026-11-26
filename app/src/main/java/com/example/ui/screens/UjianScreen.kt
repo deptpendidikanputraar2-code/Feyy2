@@ -367,29 +367,42 @@ fun UjianScreen(
                         }
                     }
                 }
+                val filteredUjianMateri = db.ujianMateri.filter {
+                    viewModel.matchesFirqohFilter(it.firqohId, uiState.ujianFirqoh)
+                }
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    db.ujianMateri.forEach { u ->
+                    if (filteredUjianMateri.isEmpty()) {
                         SectionCard {
-                            Row(
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                StatusPill(viewModel.getFirqohName(u.firqohId), Emerald100, Emerald900)
-                                StatusPill("KKM: ${u.kkm}", Amber100, Amber900)
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(u.namaUjian, fontSize = 14.sp, fontWeight = FontWeight.Black, color = Slate900)
-                            Text("Kitab: ${u.kitab}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Emerald800)
-                            Text(u.keterangan, fontSize = 12.sp, color = Slate700)
-                            if (canManageUjianMateri) {
-                                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                                    TextButton(onClick = {
-                                        editingUjianMateri = u
-                                        showUjianMateriModal = true
-                                    }) { Text("✏️ Edit", fontSize = 12.sp, color = Slate700) }
-                                    TextButton(onClick = { viewModel.deleteUjianMateri(u.id) }) {
-                                        Text("🗑️ Hapus", fontSize = 12.sp, color = Rose700)
+                            Text(
+                                text = "Belum ada materi ujian untuk $ujianFilterLabel.",
+                                fontSize = 12.sp,
+                                color = Slate500
+                            )
+                        }
+                    } else {
+                        filteredUjianMateri.forEach { u ->
+                            SectionCard {
+                                Row(
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    StatusPill(viewModel.getFirqohName(u.firqohId), Emerald100, Emerald900)
+                                    StatusPill("KKM: ${u.kkm}", Amber100, Amber900)
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(u.namaUjian, fontSize = 14.sp, fontWeight = FontWeight.Black, color = Slate900)
+                                Text("Kitab: ${u.kitab}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Emerald800)
+                                Text(u.keterangan, fontSize = 12.sp, color = Slate700)
+                                if (canManageUjianMateri) {
+                                    Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                                        TextButton(onClick = {
+                                            editingUjianMateri = u
+                                            showUjianMateriModal = true
+                                        }) { Text("✏️ Edit", fontSize = 12.sp, color = Slate700) }
+                                        TextButton(onClick = { viewModel.deleteUjianMateri(u.id) }) {
+                                            Text("🗑️ Hapus", fontSize = 12.sp, color = Rose700)
+                                        }
                                     }
                                 }
                             }
@@ -472,17 +485,28 @@ fun UjianScreen(
     }
 
     if (showUjianMateriModal) {
-        var firqohId by remember { mutableStateOf(editingUjianMateri?.firqohId ?: db.firqoh.firstOrNull()?.id ?: "FRQ-1") }
-        var namaUjian by remember { mutableStateOf(editingUjianMateri?.namaUjian ?: "") }
-        var kitab by remember { mutableStateOf(editingUjianMateri?.kitab ?: "") }
-        var kkm by remember { mutableStateOf((editingUjianMateri?.kkm ?: 75).toString()) }
-        var ket by remember { mutableStateOf(editingUjianMateri?.keterangan ?: "") }
+        val ujianMateriFirqohOptions = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = false)
+        val defaultFirqohSelection = editingUjianMateri?.firqohId
+            ?: uiState.ujianFirqoh.takeIf { it.isNotBlank() }
+            ?: db.firqoh.firstOrNull()?.id
+            ?: "ALL"
+        var firqohId by remember(editingUjianMateri, uiState.ujianFirqoh) { mutableStateOf(defaultFirqohSelection) }
+        var namaUjian by remember(editingUjianMateri) { mutableStateOf(editingUjianMateri?.namaUjian ?: "") }
+        var kitab by remember(editingUjianMateri) { mutableStateOf(editingUjianMateri?.kitab ?: "") }
+        var kkm by remember(editingUjianMateri) { mutableStateOf((editingUjianMateri?.kkm ?: 75).toString()) }
+        var ket by remember(editingUjianMateri) { mutableStateOf(editingUjianMateri?.keterangan ?: "") }
 
         MmqaModalDialog(
             title = if (editingUjianMateri != null) "Edit Materi Ujian" else "Tambah Materi Ujian Perfirqoh",
             onDismiss = { showUjianMateriModal = false }
         ) {
-            CompactDropdownSelector("Firqoh", viewModel.getFirqohName(firqohId), db.firqoh.map { it.id to it.nama }, { firqohId = it })
+            CompactDropdownSelector(
+                label = "Firqoh / Grup Firqoh",
+                selectedText = ujianMateriFirqohOptions.firstOrNull { it.first == firqohId }?.second
+                    ?: viewModel.getFirqohName(firqohId),
+                options = ujianMateriFirqohOptions,
+                onSelect = { firqohId = it }
+            )
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = namaUjian, onValueChange = { namaUjian = it }, label = { Text("Judul / Nama Ujian") }, modifier = Modifier.fillMaxWidth())
             Spacer(modifier = Modifier.height(8.dp))

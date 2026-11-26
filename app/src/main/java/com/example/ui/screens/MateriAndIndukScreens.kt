@@ -130,20 +130,26 @@ fun MateriScreen(
     }
 
     if (showMateriModal) {
-        var firqohId by remember { mutableStateOf(editingMateri?.firqohId ?: db.firqoh.firstOrNull()?.id ?: "FRQ-1") }
-        var kitab by remember { mutableStateOf(editingMateri?.kitab ?: "") }
-        var bab by remember { mutableStateOf(editingMateri?.bab ?: "") }
-        var target by remember { mutableStateOf(editingMateri?.target ?: "") }
-        var progress by remember { mutableStateOf((editingMateri?.progress ?: 0).toString()) }
+        val materiFirqohOptions = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = false)
+        val defaultFirqohSelection = editingMateri?.firqohId
+            ?: uiState.materiFirqoh.takeIf { it.isNotBlank() }
+            ?: db.firqoh.firstOrNull()?.id
+            ?: "ALL"
+        var firqohId by remember(editingMateri, uiState.materiFirqoh) { mutableStateOf(defaultFirqohSelection) }
+        var kitab by remember(editingMateri) { mutableStateOf(editingMateri?.kitab ?: "") }
+        var bab by remember(editingMateri) { mutableStateOf(editingMateri?.bab ?: "") }
+        var target by remember(editingMateri) { mutableStateOf(editingMateri?.target ?: "") }
+        var progress by remember(editingMateri) { mutableStateOf((editingMateri?.progress ?: 0).toString()) }
 
         MmqaModalDialog(
             title = if (editingMateri != null) "Edit Materi Perfirqoh" else "Tambah Materi Perfirqoh Baru",
             onDismiss = { showMateriModal = false }
         ) {
             CompactDropdownSelector(
-                label = "Firqoh",
-                selectedText = viewModel.getFirqohName(firqohId),
-                options = db.firqoh.map { it.id to it.nama },
+                label = "Firqoh / Grup Firqoh",
+                selectedText = materiFirqohOptions.firstOrNull { it.first == firqohId }?.second
+                    ?: viewModel.getFirqohName(firqohId),
+                options = materiFirqohOptions,
                 onSelect = { firqohId = it }
             )
             Spacer(modifier = Modifier.height(10.dp))
