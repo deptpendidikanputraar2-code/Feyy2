@@ -119,6 +119,21 @@ jobs:
             echo "APK_FILE=MMQA-AR2.apk" >> "$GITHUB_ENV"
           fi
 
+      - name: Print APK Certificate SHA-1 (for Firebase)
+        run: |
+          CERT_INFO=$(keytool -printcert -jarfile "${{ env.APK_FILE }}")
+          SHA1=$(echo "$CERT_INFO" | grep -m1 "SHA1:" | awk '{print $2}')
+          SHA256=$(echo "$CERT_INFO" | grep -m1 "SHA256:" | awk '{print $2}')
+          echo "APK_SHA1=$SHA1" >> "$GITHUB_ENV"
+          echo "APK_SHA256=$SHA256" >> "$GITHUB_ENV"
+          {
+            echo "### Sidik Jari Sertifikat APK (untuk Firebase Google Sign-In)"
+            echo "- **SHA-1:** \`$SHA1\`"
+            echo "- **SHA-256:** \`$SHA256\`"
+            echo ""
+            echo "Daftarkan **SHA-1** di atas ke Firebase Console -> Project settings -> Your apps -> Add fingerprint agar Sign in with Google aktif."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -145,5 +160,9 @@ jobs:
           body: |
             Build otomatis APK **MMQA Al Rifai 02 (AR2)**.
             Unduh file `.apk` di bagian **Assets** di bawah untuk dipasang di perangkat Android.
+
+            **Sidik Jari Sertifikat APK (untuk Firebase → Add fingerprint):**
+            - SHA-1: `${{ env.APK_SHA1 }}`
+            - SHA-256: `${{ env.APK_SHA256 }}`
           files: ${{ env.APK_FILE }}
           make_latest: true

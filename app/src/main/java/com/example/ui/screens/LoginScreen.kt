@@ -303,6 +303,22 @@ private fun LoginFormCard(
                         onAuthError = onGoogleSignInError,
                         label = "Sign in with Google"
                     )
+                    if (!loginError.isNullOrBlank()) {
+                        Surface(
+                            color = Rose50,
+                            border = BorderStroke(1.dp, Rose200),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = loginError,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Rose800,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
                 }
             }
         } else {
