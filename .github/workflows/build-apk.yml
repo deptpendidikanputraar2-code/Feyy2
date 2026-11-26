@@ -120,12 +120,20 @@ jobs:
           fi
 
       - name: Print APK Certificate SHA-1 (for Firebase)
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
         run: |
-          CERT_INFO=$(keytool -printcert -jarfile "${{ env.APK_FILE }}")
-          SHA1=$(echo "$CERT_INFO" | grep -m1 "SHA1:" | awk '{print $2}')
-          SHA256=$(echo "$CERT_INFO" | grep -m1 "SHA256:" | awk '{print $2}')
+          if [ "${{ steps.signing.outputs.build_type }}" = "release" ]; then
+            CERT_INFO=$(keytool -list -v -keystore my-upload-key.jks -storepass "$STORE_PASSWORD" -alias upload)
+          else
+            CERT_INFO=$(keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey)
+          fi
+          SHA1=$(echo "$CERT_INFO" | grep -m1 "SHA1:" | sed 's/.*SHA1:[[:space:]]*//')
+          SHA256=$(echo "$CERT_INFO" | grep -m1 "SHA256:" | sed 's/.*SHA256:[[:space:]]*//')
           echo "APK_SHA1=$SHA1" >> "$GITHUB_ENV"
           echo "APK_SHA256=$SHA256" >> "$GITHUB_ENV"
+          echo "Detected SHA-1: $SHA1"
+          echo "Detected SHA-256: $SHA256"
           {
             echo "### Sidik Jari Sertifikat APK (untuk Firebase Google Sign-In)"
             echo "- **SHA-1:** \`$SHA1\`"
