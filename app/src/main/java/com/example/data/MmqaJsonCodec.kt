@@ -53,6 +53,8 @@ object MmqaJsonCodec {
         p.put("suratArsip", JSONArray().apply { db.suratArsip.forEach { put(encodeSuratArsip(it)) } })
         p.put("inventaris", JSONArray().apply { db.inventaris.forEach { put(encodeInventaris(it)) } })
         p.put("personalia", JSONArray().apply { db.personalia.forEach { put(encodePersonalia(it)) } })
+        p.put("juknisDocs", JSONArray().apply { db.juknisDocs.forEach { put(encodeJuknisDoc(it)) } })
+        p.put("jadwal", JSONArray().apply { db.jadwal.forEach { put(encodeJadwal(it)) } })
         p.put("chatChannels", JSONArray().apply { db.chatChannels.forEach { put(encodeChatChannel(it)) } })
         p.put("chatMessages", JSONArray().apply { db.chatMessages.forEach { put(encodeChatMessage(it)) } })
         p.put("adminConfig", JSONArray().apply {
@@ -90,6 +92,8 @@ object MmqaJsonCodec {
         val suratArsipArr = remote.optJSONArray("suratArsip")
         val inventarisArr = remote.optJSONArray("inventaris")
         val personaliaArr = remote.optJSONArray("personalia")
+        val juknisArr = remote.optJSONArray("juknisDocs")
+        val jadwalArr = remote.optJSONArray("jadwal")
         val chatChArr = remote.optJSONArray("chatChannels")
         val chatMsgArr = remote.optJSONArray("chatMessages")
 
@@ -120,6 +124,8 @@ object MmqaJsonCodec {
             suratArsip = if (suratArsipArr != null && suratArsipArr.length() > 0) decodeList(suratArsipArr, ::decodeSuratArsip) else base.suratArsip,
             inventaris = if (inventarisArr != null && inventarisArr.length() > 0) decodeList(inventarisArr, ::decodeInventaris) else base.inventaris,
             personalia = if (personaliaArr != null && personaliaArr.length() > 0) decodeList(personaliaArr, ::decodePersonalia) else base.personalia,
+            juknisDocs = if (juknisArr != null && juknisArr.length() > 0) decodeList(juknisArr, ::decodeJuknisDoc) else base.juknisDocs,
+            jadwal = if (jadwalArr != null && jadwalArr.length() > 0) decodeList(jadwalArr, ::decodeJadwal) else base.jadwal,
             chatChannels = if (chatChArr != null && chatChArr.length() > 0) decodeList(chatChArr, ::decodeChatChannel) else base.chatChannels,
             chatMessages = if (chatMsgArr != null && chatMsgArr.length() > 0) decodeList(chatMsgArr, ::decodeChatMessage) else base.chatMessages,
             adminConfig = parsedAdminConfig
@@ -429,6 +435,23 @@ object MmqaJsonCodec {
         put("isiDefault", t.isiDefault)
         put("pdfName", t.pdfName)
         put("pdfDataUrl", t.pdfDataUrl)
+        put("kopBaris1", t.kopBaris1)
+        put("kopBaris2", t.kopBaris2)
+        put("kopBaris3", t.kopBaris3)
+        put("kotaDefault", t.kotaDefault)
+        put("lampiranDefault", t.lampiranDefault)
+        put("tujuanDefault", t.tujuanDefault)
+        put("penandatanganDefault", t.penandatanganDefault)
+        put("jabatanDefault", t.jabatanDefault)
+        put("sekretarisDefault", t.sekretarisDefault)
+        put("jabatanSekretarisDefault", t.jabatanSekretarisDefault)
+        put("tampilkanSekretaris", t.tampilkanSekretaris)
+        put("ttdKetuaDefault", t.ttdKetuaDefault)
+        put("ttdSekretarisDefault", t.ttdSekretarisDefault)
+        put("fontStyle", t.fontStyle)
+        put("ukuranKertas", t.ukuranKertas)
+        put("marginMm", t.marginMm)
+        put("pedomanFormat", t.pedomanFormat)
     }
 
     private fun decodeSuratTemplate(o: JSONObject) = SuratTemplateItem(
@@ -438,7 +461,24 @@ object MmqaJsonCodec {
         perihalDefault = o.optString("perihalDefault"),
         isiDefault = o.optString("isiDefault"),
         pdfName = o.optString("pdfName"),
-        pdfDataUrl = o.optString("pdfDataUrl")
+        pdfDataUrl = o.optString("pdfDataUrl"),
+        kopBaris1 = o.optString("kopBaris1", "MAJELIS MUSYAWARAH QIRA'ATIL KUTUB & AL-QUR'AN").ifBlank { "MAJELIS MUSYAWARAH QIRA'ATIL KUTUB & AL-QUR'AN" },
+        kopBaris2 = o.optString("kopBaris2", "MMQA AL RIFAI 02 (AR2)").ifBlank { "MMQA AL RIFAI 02 (AR2)" },
+        kopBaris3 = o.optString("kopBaris3", "Sekretariat Dewan Harian Majelis • Sistem Administrasi Terpadu").ifBlank { "Sekretariat Dewan Harian Majelis • Sistem Administrasi Terpadu" },
+        kotaDefault = o.optString("kotaDefault", "Malang").ifBlank { "Malang" },
+        lampiranDefault = o.optString("lampiranDefault", "-").ifBlank { "-" },
+        tujuanDefault = o.optString("tujuanDefault", "Yth. Seluruh Mu’allim Firqoh MMQA AR2"),
+        penandatanganDefault = o.optString("penandatanganDefault", "Ust. H. Ahmad Fauzi, M.Pd").ifBlank { "Ust. H. Ahmad Fauzi, M.Pd" },
+        jabatanDefault = o.optString("jabatanDefault", "Ketua Dewan Harian MMQA").ifBlank { "Ketua Dewan Harian MMQA" },
+        sekretarisDefault = o.optString("sekretarisDefault", "Ust. Muhammad Ridwan").ifBlank { "Ust. Muhammad Ridwan" },
+        jabatanSekretarisDefault = o.optString("jabatanSekretarisDefault", "Sekretaris Umum MMQA").ifBlank { "Sekretaris Umum MMQA" },
+        tampilkanSekretaris = o.optBoolean("tampilkanSekretaris", true),
+        ttdKetuaDefault = o.optString("ttdKetuaDefault", ""),
+        ttdSekretarisDefault = o.optString("ttdSekretarisDefault", ""),
+        fontStyle = o.optString("fontStyle", "Times New Roman (Resmi)").ifBlank { "Times New Roman (Resmi)" },
+        ukuranKertas = o.optString("ukuranKertas", "A4").ifBlank { "A4" },
+        marginMm = o.optInt("marginMm", 20).coerceIn(10, 40),
+        pedomanFormat = o.optString("pedomanFormat", "")
     )
 
     private fun encodeSuratArsip(s: SuratArsipItem) = JSONObject().apply {
@@ -456,6 +496,18 @@ object MmqaJsonCodec {
         put("templateId", s.templateId)
         put("pdfName", s.pdfName)
         put("pdfDataUrl", s.pdfDataUrl)
+        put("kopBaris1", s.kopBaris1)
+        put("kopBaris2", s.kopBaris2)
+        put("kopBaris3", s.kopBaris3)
+        put("kotaTanggal", s.kotaTanggal)
+        put("sekretaris", s.sekretaris)
+        put("jabatanSekretaris", s.jabatanSekretaris)
+        put("tampilkanSekretaris", s.tampilkanSekretaris)
+        put("ttdKetuaDataUrl", s.ttdKetuaDataUrl)
+        put("ttdSekretarisDataUrl", s.ttdSekretarisDataUrl)
+        put("fontStyle", s.fontStyle)
+        put("ukuranKertas", s.ukuranKertas)
+        put("marginMm", s.marginMm)
     }
 
     private fun decodeSuratArsip(o: JSONObject) = SuratArsipItem(
@@ -471,7 +523,19 @@ object MmqaJsonCodec {
         jabatanPenandatangan = o.optString("jabatanPenandatangan"),
         templateId = o.optString("templateId"),
         pdfName = o.optString("pdfName"),
-        pdfDataUrl = o.optString("pdfDataUrl")
+        pdfDataUrl = o.optString("pdfDataUrl"),
+        kopBaris1 = o.optString("kopBaris1", "MAJELIS MUSYAWARAH QIRA'ATIL KUTUB & AL-QUR'AN").ifBlank { "MAJELIS MUSYAWARAH QIRA'ATIL KUTUB & AL-QUR'AN" },
+        kopBaris2 = o.optString("kopBaris2", "MMQA AL RIFAI 02 (AR2)").ifBlank { "MMQA AL RIFAI 02 (AR2)" },
+        kopBaris3 = o.optString("kopBaris3", "Sekretariat Dewan Harian Majelis • Sistem Administrasi Terpadu").ifBlank { "Sekretariat Dewan Harian Majelis • Sistem Administrasi Terpadu" },
+        kotaTanggal = o.optString("kotaTanggal", "Malang").ifBlank { "Malang" },
+        sekretaris = o.optString("sekretaris", "Ust. Muhammad Ridwan"),
+        jabatanSekretaris = o.optString("jabatanSekretaris", "Sekretaris Umum MMQA"),
+        tampilkanSekretaris = o.optBoolean("tampilkanSekretaris", true),
+        ttdKetuaDataUrl = o.optString("ttdKetuaDataUrl", ""),
+        ttdSekretarisDataUrl = o.optString("ttdSekretarisDataUrl", ""),
+        fontStyle = o.optString("fontStyle", "Times New Roman (Resmi)").ifBlank { "Times New Roman (Resmi)" },
+        ukuranKertas = o.optString("ukuranKertas", "A4").ifBlank { "A4" },
+        marginMm = o.optInt("marginMm", 20).coerceIn(10, 40)
     )
 
     private fun encodeInventaris(i: InventarisItem) = JSONObject().apply {
@@ -522,6 +586,82 @@ object MmqaJsonCodec {
         periode = o.optString("periode", "2026 - 2027"),
         kontak = o.optString("kontak", ""),
         urutan = o.optInt("urutan", 1)
+    )
+
+    private fun encodeJuknisDoc(d: JuknisDocumentItem) = JSONObject().apply {
+        put("id", d.id)
+        put("judul", d.judul)
+        put("nama", d.judul)
+        put("kategori", d.kategori)
+        put("nomorDokumen", d.nomorDokumen)
+        put("tanggal", d.tanggal)
+        put("deskripsi", d.deskripsi)
+        put("pdfName", d.pdfName)
+        put("pdfDataUrl", d.pdfDataUrl)
+        put("isPublicOnLogin", d.isPublicOnLogin)
+        put("uploadedBy", d.uploadedBy)
+        put("isAcuanAturan", d.isAcuanAturan)
+        put("batasAlphaSp1", d.batasAlphaSp1)
+        put("batasAlphaSp2", d.batasAlphaSp2)
+        put("batasAlphaSp3", d.batasAlphaSp3)
+        put("batasIzinPeringatan", d.batasIzinPeringatan)
+        put("konsekuensiSp1", d.konsekuensiSp1)
+        put("konsekuensiSp2", d.konsekuensiSp2)
+        put("konsekuensiSp3", d.konsekuensiSp3)
+        put("konsekuensiIzin", d.konsekuensiIzin)
+    }
+
+    private fun decodeJuknisDoc(o: JSONObject) = JuknisDocumentItem(
+        id = o.optString("id"),
+        judul = o.optString("judul", o.optString("nama")),
+        kategori = o.optString("kategori", "Juknis"),
+        nomorDokumen = o.optString("nomorDokumen", ""),
+        tanggal = o.optString("tanggal", MmqaConstants.todayStr()),
+        deskripsi = o.optString("deskripsi", ""),
+        pdfName = o.optString("pdfName", ""),
+        pdfDataUrl = o.optString("pdfDataUrl", ""),
+        isPublicOnLogin = o.optBoolean("isPublicOnLogin", true),
+        uploadedBy = o.optString("uploadedBy", "Dewan Harian"),
+        isAcuanAturan = o.optBoolean("isAcuanAturan", false),
+        batasAlphaSp1 = o.optInt("batasAlphaSp1", 3),
+        batasAlphaSp2 = o.optInt("batasAlphaSp2", 5),
+        batasAlphaSp3 = o.optInt("batasAlphaSp3", 8),
+        batasIzinPeringatan = o.optInt("batasIzinPeringatan", 4),
+        konsekuensiSp1 = o.optString("konsekuensiSp1", "Teguran lisan Mu'allim & pembinaan adab harian"),
+        konsekuensiSp2 = o.optString("konsekuensiSp2", "Surat Peringatan (SP-1) & pemanggilan wali santri"),
+        konsekuensiSp3 = o.optString("konsekuensiSp3", "Sidang Dewan Harian & takzir khusus / skorsing"),
+        konsekuensiIzin = o.optString("konsekuensiIzin", "Klarifikasi wali santri & pembatasan izin keluar")
+    )
+
+    private fun encodeJadwal(j: JadwalItem) = JSONObject().apply {
+        put("id", j.id)
+        put("judul", j.judul)
+        put("nama", j.judul)
+        put("kategori", j.kategori)
+        put("hari", j.hari)
+        put("tanggal", j.tanggal)
+        put("jamMulai", j.jamMulai)
+        put("jamSelesai", j.jamSelesai)
+        put("tempat", j.tempat)
+        put("firqohId", j.firqohId)
+        put("penanggungJawab", j.penanggungJawab)
+        put("keterangan", j.keterangan)
+        put("isPublicOnLogin", j.isPublicOnLogin)
+    }
+
+    private fun decodeJadwal(o: JSONObject) = JadwalItem(
+        id = o.optString("id"),
+        judul = o.optString("judul", o.optString("nama")),
+        kategori = o.optString("kategori", "MMQA Harian"),
+        hari = o.optString("hari", "Senin - Sabtu"),
+        tanggal = o.optString("tanggal", MmqaConstants.todayStr()),
+        jamMulai = o.optString("jamMulai", "05:30"),
+        jamSelesai = o.optString("jamSelesai", "07:00"),
+        tempat = o.optString("tempat", "Majelis Utama AR2"),
+        firqohId = o.optString("firqohId", "ALL"),
+        penanggungJawab = o.optString("penanggungJawab", "Dewan Harian MMQA"),
+        keterangan = o.optString("keterangan", ""),
+        isPublicOnLogin = o.optBoolean("isPublicOnLogin", true)
     )
 
     private fun encodeChatChannel(c: ChatChannelItem) = JSONObject().apply {

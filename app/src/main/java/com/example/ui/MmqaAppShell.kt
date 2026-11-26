@@ -10,7 +10,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.*
@@ -18,7 +20,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -30,6 +31,9 @@ import com.example.data.MenuConfigItem
 import com.example.data.MmqaDatabase
 import com.example.data.SyncBannerState
 import com.example.data.UserAccount
+import com.example.ui.components.LiquidGlassBottomBarContainer
+import com.example.ui.components.LiquidGlassSidebarContainer
+import com.example.ui.components.LiquidGlassTopBarContainer
 import com.example.ui.components.MmqaLogoImage
 import com.example.ui.components.UserAvatarImage
 import com.example.ui.screens.*
@@ -42,11 +46,15 @@ fun MmqaAppShell(
     db: MmqaDatabase,
     uiState: MmqaUiState,
     syncState: SyncBannerState,
+    isOnline: Boolean,
+    pendingMutationCount: Int,
+    biometricLockEnabled: Boolean,
     viewModel: MmqaViewModel,
     firebaseUser: FirebaseUser?,
     unreadNotificationCount: Int,
     onOpenNotifications: () -> Unit,
     onOpenEditProfile: () -> Unit,
+    onLockApp: () -> Unit,
     onGoogleSignOut: () -> Unit,
     onExportCsv: (filename: String, csvContent: String) -> Unit,
     onPickPdfTemplate: ((fileName: String, dataUrl: String) -> Unit) -> Unit,
@@ -85,12 +93,16 @@ fun MmqaAppShell(
                     firebaseUser = firebaseUser,
                     menus = accessibleMenus,
                     activeMenu = effectiveMenu,
+                    isOnline = isOnline,
+                    pendingMutationCount = pendingMutationCount,
+                    biometricLockEnabled = biometricLockEnabled,
                     onSelectMenu = { viewModel.selectMenu(it) },
                     onOpenEditProfile = onOpenEditProfile,
+                    onLockApp = onLockApp,
                     onLogout = { viewModel.logout() },
                     onGoogleSignOut = onGoogleSignOut,
                     modifier = Modifier
-                        .width(280.dp)
+                        .width(284.dp)
                         .fillMaxHeight()
                 )
                 Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
@@ -98,6 +110,8 @@ fun MmqaAppShell(
                         currentUser = currentUser,
                         activeMenu = effectiveMenu,
                         syncState = syncState,
+                        isOnline = isOnline,
+                        pendingMutationCount = pendingMutationCount,
                         hasPending = db.pendingSync,
                         unreadNotificationCount = unreadNotificationCount,
                         showMenuButton = false,
@@ -129,14 +143,17 @@ fun MmqaAppShell(
                 drawerState = drawerState,
                 drawerContent = {
                     ModalDrawerSheet(
-                        drawerContainerColor = Emerald950,
-                        modifier = Modifier.width(288.dp)
+                        drawerContainerColor = Color.Transparent,
+                        modifier = Modifier.width(292.dp)
                     ) {
                         MmqaSidebarContent(
                             currentUser = currentUser,
                             firebaseUser = firebaseUser,
                             menus = accessibleMenus,
                             activeMenu = effectiveMenu,
+                            isOnline = isOnline,
+                            pendingMutationCount = pendingMutationCount,
+                            biometricLockEnabled = biometricLockEnabled,
                             onSelectMenu = { menuId ->
                                 viewModel.selectMenu(menuId)
                                 coroutineScope.launch { drawerState.close() }
@@ -144,6 +161,10 @@ fun MmqaAppShell(
                             onOpenEditProfile = {
                                 coroutineScope.launch { drawerState.close() }
                                 onOpenEditProfile()
+                            },
+                            onLockApp = {
+                                coroutineScope.launch { drawerState.close() }
+                                onLockApp()
                             },
                             onLogout = {
                                 coroutineScope.launch { drawerState.close() }
@@ -166,6 +187,8 @@ fun MmqaAppShell(
                             currentUser = currentUser,
                             activeMenu = effectiveMenu,
                             syncState = syncState,
+                            isOnline = isOnline,
+                            pendingMutationCount = pendingMutationCount,
                             hasPending = db.pendingSync,
                             unreadNotificationCount = unreadNotificationCount,
                             showMenuButton = true,
@@ -212,18 +235,23 @@ private fun MmqaSidebarContent(
     firebaseUser: FirebaseUser?,
     menus: List<MenuConfigItem>,
     activeMenu: String,
+    isOnline: Boolean,
+    pendingMutationCount: Int,
+    biometricLockEnabled: Boolean,
     onSelectMenu: (String) -> Unit,
     onOpenEditProfile: () -> Unit,
+    onLockApp: () -> Unit,
     onLogout: () -> Unit,
     onGoogleSignOut: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(
-        modifier = modifier
-            .background(Brush.verticalGradient(listOf(Emerald950, Emerald900, Slate900)))
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .windowInsetsPadding(WindowInsets.navigationBars)
-    ) {
+    LiquidGlassSidebarContainer(modifier = modifier) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+        ) {
         // Brand Header
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -360,14 +388,63 @@ private fun MmqaSidebarContent(
             }
         }
 
-        // Bottom Actions (Clean multi-user logout only — no developer setup buttons)
-        HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+        // Bottom Actions (Offline Vault badge, Biometric Lock & Multi-user logout)
+        HorizontalDivider(color = Color.White.copy(alpha = 0.14f))
         Column(
             verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.padding(14.dp)
         ) {
             Surface(
-                color = Rose600.copy(alpha = 0.25f),
+                color = Color.White.copy(alpha = 0.10f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                ) {
+                    Text(
+                        text = if (isOnline) "🛡️ Enkripsi AES-256 • Online" else "📴 Mode Offline Lokal",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isOnline) Emerald100 else Amber300
+                    )
+                    if (pendingMutationCount > 0) {
+                        Text(
+                            text = "$pendingMutationCount antrean",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Black,
+                            color = Amber300
+                        )
+                    }
+                }
+            }
+            if (biometricLockEnabled) {
+                Surface(
+                    color = Amber400.copy(alpha = 0.22f),
+                    border = BorderStroke(1.dp, Amber300.copy(alpha = 0.4f)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 42.dp)
+                        .clickable(onClick = onLockApp)
+                        .testTag("sidebar_lock_app_button")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(9.dp)
+                    ) {
+                        Icon(Icons.Default.Lock, contentDescription = "Kunci Aplikasi", tint = Amber300, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Kunci Aplikasi (Biometrik)", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Amber300)
+                    }
+                }
+            }
+            Surface(
+                color = Rose600.copy(alpha = 0.28f),
                 border = BorderStroke(1.dp, Rose200.copy(alpha = 0.35f)),
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
@@ -398,6 +475,7 @@ private fun MmqaSidebarContent(
                 }
             }
         }
+        }
     }
 }
 
@@ -406,6 +484,8 @@ private fun MmqaTopHeaderBar(
     currentUser: UserAccount,
     activeMenu: String,
     syncState: SyncBannerState,
+    isOnline: Boolean,
+    pendingMutationCount: Int,
     hasPending: Boolean,
     unreadNotificationCount: Int,
     showMenuButton: Boolean,
@@ -416,8 +496,10 @@ private fun MmqaTopHeaderBar(
     onLogout: () -> Unit
 ) {
     val (title, subtitle) = when (activeMenu) {
-        "dashboard" -> "Dashboard Kehadiran" to "Rekapan kehadiran santri perfirqoh, mu’allim & dewan harian"
-        "absensi" -> "Absensi Bertingkat" to "Presensi santri perfirqoh & pengurus harian"
+        "dashboard" -> "Dashboard Kehadiran" to "Rekapan kehadiran, santri bermasalah & keuangan"
+        "absensi" -> "Absensi Bertingkat" to "Presensi santri, barcode scanner & pengurus harian"
+        "jadwal" -> "Jadwal Kegiatan" to "MMQA harian, ujian, absensi & event khusus"
+        "juknis" -> "Juknis & Materi Rapat" to "Dokumen PDF resmi & acuan aturan pelanggaran"
         "materi" -> "Materi Perfirqoh" to "Pengaturan kitab, bab pembelajaran & target hafalan"
         "ujian" -> "Ujian & Penilaian" to "Peserta dari Data Induk, nilai rubrik berbobot & rekapan"
         "keuangan" -> "Keuangan & Syahriah" to "Buku kas majelis & kontrol syahriah santri otomatis"
@@ -426,22 +508,18 @@ private fun MmqaTopHeaderBar(
         "induk" -> "Data Induk Terpadu" to "Master data santri, mu’allim, dewan harian & firqoh"
         "personalia" -> "Struktur Personalia MMQA" to "Susunan kepengurusan, divisi & jabatan majelis"
         "chat" -> "Grup Chat Majelis" to "Komunikasi real-time dewan harian & mu’allim"
-        "admin" -> "Kontrol Penuh Admin" to "Kelola menu, submenu, anak sub, akun & password rule"
+        "admin" -> "Kontrol Penuh Admin" to "Kelola menu, submenu, anak sub, akun & keamanan"
         else -> "MMQA Al Rifai 02" to "Sistem Manajemen Majelis"
     }
 
     val syncDotColor = when {
-        syncState is SyncBannerState.Offline || hasPending -> Amber500
+        !isOnline || syncState is SyncBannerState.Offline || hasPending || pendingMutationCount > 0 -> Amber500
         syncState is SyncBannerState.Error -> Rose600
         syncState is SyncBannerState.Syncing -> Amber400
         else -> Emerald700
     }
 
-    Surface(
-        color = Color.White,
-        shadowElevation = 2.dp,
-        modifier = Modifier.fillMaxWidth()
-    ) {
+    LiquidGlassTopBarContainer(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -456,10 +534,10 @@ private fun MmqaTopHeaderBar(
                         modifier = Modifier
                             .size(44.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Slate100)
+                            .background(Color.White.copy(alpha = 0.72f))
                             .testTag("open_drawer_button")
                     ) {
-                        Icon(Icons.Default.Menu, contentDescription = "Menu Navigasi", tint = Slate900)
+                        Icon(Icons.Default.Menu, contentDescription = "Menu Navigasi", tint = Emerald950)
                     }
                 }
                 Column(
@@ -472,7 +550,7 @@ private fun MmqaTopHeaderBar(
                             text = title,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Black,
-                            color = Slate900,
+                            color = Emerald950,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
@@ -483,11 +561,33 @@ private fun MmqaTopHeaderBar(
                                 .clip(CircleShape)
                                 .background(syncDotColor)
                         )
+                        if (!isOnline || pendingMutationCount > 0) {
+                            Surface(
+                                color = Amber100,
+                                shape = RoundedCornerShape(999.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    if (!isOnline) {
+                                        Icon(Icons.Default.CloudOff, contentDescription = "Offline", tint = Amber950, modifier = Modifier.size(11.dp))
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                    }
+                                    Text(
+                                        text = if (!isOnline) "Offline" else "Sync $pendingMutationCount",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = Amber950
+                                    )
+                                }
+                            }
+                        }
                     }
                     Text(
                         text = subtitle,
                         fontSize = 11.sp,
-                        color = Slate500,
+                        color = Slate700,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -500,13 +600,13 @@ private fun MmqaTopHeaderBar(
                         modifier = Modifier
                             .size(44.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(if (unreadNotificationCount > 0) Amber100 else Slate100)
+                            .background(if (unreadNotificationCount > 0) Amber100.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.72f))
                             .testTag("topbar_notifications_button")
                     ) {
                         Icon(
                             Icons.Default.Notifications,
                             contentDescription = "Notifikasi Majelis",
-                            tint = if (unreadNotificationCount > 0) Amber900 else Slate700,
+                            tint = if (unreadNotificationCount > 0) Amber900 else Emerald900,
                             modifier = Modifier.size(19.dp)
                         )
                     }
@@ -529,7 +629,7 @@ private fun MmqaTopHeaderBar(
                     }
                 }
 
-                // Profile Avatar Button (opens Edit Name, Photo & Password)
+                // Profile Avatar Button (opens Edit Name, Photo, Password & Biometrics)
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
@@ -561,7 +661,6 @@ private fun MmqaTopHeaderBar(
                     }
                 }
             }
-            HorizontalDivider(color = Slate200)
         }
     }
 }
@@ -573,19 +672,14 @@ private fun MmqaBottomNavBar(
     onSelectMenu: (String) -> Unit,
     onOpenMore: () -> Unit
 ) {
-    Surface(
-        color = Color.White,
-        shadowElevation = 8.dp,
-        modifier = Modifier.fillMaxWidth()
-    ) {
+    LiquidGlassBottomBarContainer(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
-            HorizontalDivider(color = Slate200)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 6.dp, horizontal = 4.dp)
+                    .padding(vertical = 7.dp, horizontal = 6.dp)
             ) {
                 menus.forEach { m ->
                     val active = m.id == activeMenu
@@ -593,7 +687,7 @@ private fun MmqaBottomNavBar(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(14.dp))
                             .clickable { onSelectMenu(m.id) }
                             .padding(vertical = 4.dp)
                     ) {
@@ -601,7 +695,7 @@ private fun MmqaBottomNavBar(
                             contentAlignment = Alignment.Center,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(if (active) Emerald100 else Color.Transparent)
+                                .background(if (active) Emerald900.copy(alpha = 0.14f) else Color.Transparent)
                                 .padding(horizontal = 10.dp, vertical = 2.dp)
                         ) {
                             Text(text = m.icon, fontSize = 16.sp)
@@ -609,8 +703,8 @@ private fun MmqaBottomNavBar(
                         Text(
                             text = m.label.split(" ").firstOrNull() ?: m.label,
                             fontSize = 10.sp,
-                            fontWeight = if (active) FontWeight.ExtraBold else FontWeight.SemiBold,
-                            color = if (active) Emerald900 else Slate500,
+                            fontWeight = if (active) FontWeight.Black else FontWeight.SemiBold,
+                            color = if (active) Emerald950 else Slate700,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -620,7 +714,7 @@ private fun MmqaBottomNavBar(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(14.dp))
                         .clickable(onClick = onOpenMore)
                         .padding(vertical = 4.dp)
                 ) {
@@ -628,13 +722,13 @@ private fun MmqaBottomNavBar(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp)
                     ) {
-                        Text(text = "☰", fontSize = 16.sp, color = Slate700)
+                        Text(text = "☰", fontSize = 16.sp, color = Emerald950)
                     }
                     Text(
                         text = "Menu",
                         fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Slate500,
+                        fontWeight = FontWeight.Bold,
+                        color = Slate700,
                         maxLines = 1
                     )
                 }
@@ -657,6 +751,22 @@ private fun MmqaMainContent(
     onSaveChatAttachment: (fileName: String, mimeType: String, dataUrl: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Full-screen viewport for Chat (no outer verticalScroll or padding)
+    if (activeMenu == "chat") {
+        Box(modifier = modifier.fillMaxSize()) {
+            ChatScreen(
+                db = db,
+                uiState = uiState,
+                viewModel = viewModel,
+                isWideScreen = isWideScreen,
+                onPickDocument = onPickChatDocument,
+                onPickPhoto = onPickChatPhoto,
+                onSaveAttachment = onSaveChatAttachment
+            )
+        }
+        return
+    }
+
     Box(
         modifier = modifier
             .verticalScroll(rememberScrollState())
@@ -671,6 +781,15 @@ private fun MmqaMainContent(
             when (activeMenu) {
                 "dashboard" -> DashboardScreen(db, uiState, viewModel, isWideScreen)
                 "absensi" -> AbsensiScreen(db, uiState, viewModel, isWideScreen)
+                "jadwal" -> JadwalScreen(db, uiState, viewModel, isWideScreen)
+                "juknis" -> JuknisScreen(
+                    db = db,
+                    uiState = uiState,
+                    viewModel = viewModel,
+                    isWideScreen = isWideScreen,
+                    onPickPdfFile = onPickPdfTemplate,
+                    onSaveUploadedPdf = onSaveChatAttachment
+                )
                 "materi" -> MateriScreen(db, uiState, viewModel, isWideScreen)
                 "ujian" -> UjianScreen(db, uiState, viewModel, onExportCsv)
                 "keuangan" -> KeuanganScreen(db, uiState, viewModel, isWideScreen, onExportCsv)
@@ -678,15 +797,6 @@ private fun MmqaMainContent(
                 "inventaris" -> InventarisScreen(db, uiState, viewModel, isWideScreen, onExportCsv)
                 "induk" -> DataIndukScreen(db, uiState, viewModel)
                 "personalia" -> PersonaliaScreen(db, uiState, viewModel, isWideScreen)
-                "chat" -> ChatScreen(
-                    db = db,
-                    uiState = uiState,
-                    viewModel = viewModel,
-                    isWideScreen = isWideScreen,
-                    onPickDocument = onPickChatDocument,
-                    onPickPhoto = onPickChatPhoto,
-                    onSaveAttachment = onSaveChatAttachment
-                )
                 "admin" -> AdminScreen(db, uiState, viewModel, isWideScreen)
                 else -> DashboardScreen(db, uiState, viewModel, isWideScreen)
             }

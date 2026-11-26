@@ -52,6 +52,19 @@ data class MmqaUiState(
     val suratDraftIsi: String = "Assalamu’alaikum Warahmatullahi Wabarakatuh.\n\nDengan memohon rahmat dan ridho Allah SWT, mengharap dengan hormat kehadiran Bapak/Ustadz pada rapat evaluasi KBM di Majelis Utama MMQA Al Rifai 02.\n\nWassalamu’alaikum Warahmatullahi Wabarakatuh.",
     val suratDraftPenandatangan: String = "Ust. H. Ahmad Fauzi, M.Pd",
     val suratDraftJabatan: String = "Ketua Dewan Harian MMQA",
+    val suratDraftSekretaris: String = "Ust. Muhammad Ridwan",
+    val suratDraftJabatanSekretaris: String = "Sekretaris Umum MMQA",
+    val suratDraftTampilkanSekretaris: Boolean = true,
+    val suratDraftTtdKetua: String = "",
+    val suratDraftTtdSekretaris: String = "",
+    val suratDraftKop1: String = "MAJELIS MUSYAWARAH QIRA'ATIL KUTUB & AL-QUR'AN",
+    val suratDraftKop2: String = "MMQA AL RIFAI 02 (AR2)",
+    val suratDraftKop3: String = "Sekretariat Dewan Harian Majelis • Sistem Administrasi Terpadu",
+    val suratDraftKota: String = "Malang",
+    val suratDraftFontStyle: String = "Times New Roman (Resmi)",
+    val suratDraftUkuranKertas: String = "A4",
+    val suratDraftMarginMm: Int = 20,
+    val suratDraftPedoman: String = "Format resmi A4 margin 20mm, Times New Roman. Wajib mencantumkan nomor Kode A, rincian Hari/Tanggal/Waktu/Tempat/Acara, serta TTD Ketua & Sekretaris berdampingan.",
     val inventarisFilter: String = "ALL",
     val indukTab: String = "santri",
     val indukSearch: String = "",
@@ -68,7 +81,10 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
 
     val database: StateFlow<MmqaDatabase> = repository.database
     val syncState: StateFlow<SyncBannerState> = repository.syncState
+    val isOnlineFlow: StateFlow<Boolean> = repository.isOnlineFlow
+    val pendingMutationCount: StateFlow<Int> = repository.pendingMutationCount
     val incomingChatAlerts: SharedFlow<List<ChatMessageItem>> = repository.incomingChatAlerts
+    val realtimeAlerts: SharedFlow<RealtimeAlertItem> = repository.realtimeAlerts
 
     private val _uiState = MutableStateFlow(MmqaUiState())
     val uiState: StateFlow<MmqaUiState> = _uiState.asStateFlow()
@@ -78,6 +94,12 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _supabaseStatus = MutableStateFlow(repository.getSupabaseStatus())
     val supabaseStatus: StateFlow<SupabaseStatus> = _supabaseStatus.asStateFlow()
+
+    private val _securitySettings = MutableStateFlow(repository.securityManager.loadSettings())
+    val securitySettings: StateFlow<SecuritySettings> = _securitySettings.asStateFlow()
+
+    private val _isAppLocked = MutableStateFlow(_securitySettings.value.biometricLockEnabled)
+    val isAppLocked: StateFlow<Boolean> = _isAppLocked.asStateFlow()
 
     init {
         // Keep currentUser synchronized whenever remote sync updates users (profile / role / access changes)
@@ -196,6 +218,12 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun enterApp(user: UserAccount) {
         repository.setActiveActor(user.name)
+        val curSec = _securitySettings.value
+        if (curSec.savedUsername != user.username) {
+            val updatedSec = curSec.copy(savedUsername = user.username)
+            repository.securityManager.saveSettings(updatedSec)
+            _securitySettings.value = updatedSec
+        }
         _uiState.update { state ->
             state.copy(
                 currentUser = user,
@@ -647,6 +675,31 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    fun buildAbsensiSessionOptions(): List<Pair<String, String>> {
+        val base = linkedMapOf(
+            "Pagi" to "Sesi Pagi (Harian)",
+            "Sore" to "Sesi Sore (Harian)",
+            "Malam" to "Sesi Malam (Harian)"
+        )
+        database.value.jadwal.forEach { j ->
+            val key = "Event: ${j.judul}"
+            if (!base.containsKey(key)) {
+                val catTag = if (j.kategori.isNotBlank()) " [${j.kategori}]" else ""
+                base[key] = "🎯 $key$catTag"
+            }
+        }
+        database.value.absensi.map { it.sesi.trim() }.filter { it.isNotBlank() }.distinct().forEach { s ->
+            if (!base.containsKey(s)) {
+                base[s] = "🎯 $s"
+            }
+        }
+        val currentSesi = _uiState.value.absensiSesi.trim()
+        if (currentSesi.isNotBlank() && !base.containsKey(currentSesi)) {
+            base[currentSesi] = "🎯 $currentSesi"
+        }
+        return base.entries.map { it.key to it.value }
+    }
+
     // =========================================================================
     // SURAT MENYURAT ACTIONS
     // =========================================================================
@@ -659,16 +712,44 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         return "$numStr/$kode/MMQA-AR2/$bulanRomawi/$tahun"
     }
 
+    private fun applyTemplateToState(st: MmqaUiState, tpl: SuratTemplateItem): MmqaUiState {
+        return st.copy(
+            suratDraftTemplateId = tpl.id,
+            suratDraftKode = tpl.kodeSurat,
+            suratDraftNomor = suggestNextNomorSurat(tpl.kodeSurat),
+            suratDraftLampiran = tpl.lampiranDefault.ifBlank { "-" },
+            suratDraftPerihal = tpl.perihalDefault,
+            suratDraftTujuan = tpl.tujuanDefault.ifBlank { st.suratDraftTujuan },
+            suratDraftIsi = tpl.isiDefault,
+            suratDraftPenandatangan = tpl.penandatanganDefault.ifBlank { st.suratDraftPenandatangan },
+            suratDraftJabatan = tpl.jabatanDefault.ifBlank { st.suratDraftJabatan },
+            suratDraftSekretaris = tpl.sekretarisDefault.ifBlank { st.suratDraftSekretaris },
+            suratDraftJabatanSekretaris = tpl.jabatanSekretarisDefault.ifBlank { st.suratDraftJabatanSekretaris },
+            suratDraftTampilkanSekretaris = tpl.tampilkanSekretaris,
+            suratDraftTtdKetua = tpl.ttdKetuaDefault.ifBlank { st.suratDraftTtdKetua },
+            suratDraftTtdSekretaris = tpl.ttdSekretarisDefault.ifBlank { st.suratDraftTtdSekretaris },
+            suratDraftKop1 = tpl.kopBaris1.ifBlank { st.suratDraftKop1 },
+            suratDraftKop2 = tpl.kopBaris2.ifBlank { st.suratDraftKop2 },
+            suratDraftKop3 = tpl.kopBaris3.ifBlank { st.suratDraftKop3 },
+            suratDraftKota = tpl.kotaDefault.ifBlank { st.suratDraftKota },
+            suratDraftFontStyle = tpl.fontStyle.ifBlank { "Times New Roman (Resmi)" },
+            suratDraftUkuranKertas = tpl.ukuranKertas.ifBlank { "A4" },
+            suratDraftMarginMm = tpl.marginMm.coerceIn(10, 40),
+            suratDraftPedoman = tpl.pedomanFormat
+        )
+    }
+
     fun onChangeSuratDraftKode(kode: String) {
         val tpl = database.value.suratTemplates.firstOrNull { it.kodeSurat == kode }
         _uiState.update { st ->
-            st.copy(
-                suratDraftKode = kode,
-                suratDraftNomor = suggestNextNomorSurat(kode),
-                suratDraftTemplateId = tpl?.id ?: st.suratDraftTemplateId,
-                suratDraftPerihal = tpl?.perihalDefault ?: st.suratDraftPerihal,
-                suratDraftIsi = tpl?.isiDefault ?: st.suratDraftIsi
-            )
+            if (tpl != null) {
+                applyTemplateToState(st, tpl)
+            } else {
+                st.copy(
+                    suratDraftKode = kode,
+                    suratDraftNomor = suggestNextNomorSurat(kode)
+                )
+            }
         }
     }
 
@@ -676,16 +757,13 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         val tpl = database.value.suratTemplates.firstOrNull { it.id == tplId }
         _uiState.update { st ->
             if (tpl != null) {
-                st.copy(
-                    suratDraftTemplateId = tpl.id,
-                    suratDraftKode = tpl.kodeSurat,
-                    suratDraftNomor = suggestNextNomorSurat(tpl.kodeSurat),
-                    suratDraftPerihal = tpl.perihalDefault,
-                    suratDraftIsi = tpl.isiDefault
-                )
+                applyTemplateToState(st, tpl)
             } else {
-                st.copy(suratDraftTemplateId = "")
+                st.copy(suratDraftTemplateId = "", suratDraftPedoman = "")
             }
+        }
+        if (tpl != null) {
+            showToast("Pedoman format \"${tpl.nama}\" diterapkan ke draft surat!")
         }
     }
 
@@ -706,7 +784,19 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             jabatanPenandatangan = st.suratDraftJabatan.trim(),
             templateId = tpl?.id ?: "",
             pdfName = tpl?.pdfName ?: "",
-            pdfDataUrl = tpl?.pdfDataUrl ?: ""
+            pdfDataUrl = tpl?.pdfDataUrl ?: "",
+            kopBaris1 = st.suratDraftKop1.trim(),
+            kopBaris2 = st.suratDraftKop2.trim(),
+            kopBaris3 = st.suratDraftKop3.trim(),
+            kotaTanggal = st.suratDraftKota.trim().ifBlank { "Malang" },
+            sekretaris = st.suratDraftSekretaris.trim(),
+            jabatanSekretaris = st.suratDraftJabatanSekretaris.trim(),
+            tampilkanSekretaris = st.suratDraftTampilkanSekretaris,
+            ttdKetuaDataUrl = st.suratDraftTtdKetua,
+            ttdSekretarisDataUrl = st.suratDraftTtdSekretaris,
+            fontStyle = st.suratDraftFontStyle,
+            ukuranKertas = st.suratDraftUkuranKertas,
+            marginMm = st.suratDraftMarginMm
         )
         repository.mutate(listOf(PendingMutation("suratArsip", newId, "upsert"))) { db ->
             db.copy(suratArsip = listOf(newSurat) + db.suratArsip)
@@ -727,13 +817,72 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveTemplateSurat(kode: String, nama: String, perihal: String, isi: String, pdfName: String, pdfDataUrl: String) {
-        val tplId = "TPL-${System.currentTimeMillis()}"
-        val tpl = SuratTemplateItem(tplId, kode, nama.trim(), perihal.trim(), isi, pdfName, pdfDataUrl)
+    fun saveTemplateSurat(
+        id: String? = null,
+        kode: String,
+        nama: String,
+        perihal: String,
+        isi: String,
+        pdfName: String,
+        pdfDataUrl: String,
+        kopBaris1: String = "MAJELIS MUSYAWARAH QIRA'ATIL KUTUB & AL-QUR'AN",
+        kopBaris2: String = "MMQA AL RIFAI 02 (AR2)",
+        kopBaris3: String = "Sekretariat Dewan Harian Majelis • Sistem Administrasi Terpadu",
+        kotaDefault: String = "Malang",
+        lampiranDefault: String = "-",
+        tujuanDefault: String = "Yth. Seluruh Mu’allim Firqoh MMQA AR2",
+        penandatanganDefault: String = "Ust. H. Ahmad Fauzi, M.Pd",
+        jabatanDefault: String = "Ketua Dewan Harian MMQA",
+        sekretarisDefault: String = "Ust. Muhammad Ridwan",
+        jabatanSekretarisDefault: String = "Sekretaris Umum MMQA",
+        tampilkanSekretaris: Boolean = true,
+        ttdKetuaDefault: String = "",
+        ttdSekretarisDefault: String = "",
+        fontStyle: String = "Times New Roman (Resmi)",
+        ukuranKertas: String = "A4",
+        marginMm: Int = 20,
+        pedomanFormat: String = ""
+    ) {
+        val tplId = id?.takeIf { it.isNotBlank() } ?: "TPL-${System.currentTimeMillis()}"
+        val tpl = SuratTemplateItem(
+            id = tplId,
+            kodeSurat = kode,
+            nama = nama.trim(),
+            perihalDefault = perihal.trim(),
+            isiDefault = isi,
+            pdfName = pdfName,
+            pdfDataUrl = pdfDataUrl,
+            kopBaris1 = kopBaris1.trim(),
+            kopBaris2 = kopBaris2.trim(),
+            kopBaris3 = kopBaris3.trim(),
+            kotaDefault = kotaDefault.trim().ifBlank { "Malang" },
+            lampiranDefault = lampiranDefault.trim().ifBlank { "-" },
+            tujuanDefault = tujuanDefault.trim(),
+            penandatanganDefault = penandatanganDefault.trim(),
+            jabatanDefault = jabatanDefault.trim(),
+            sekretarisDefault = sekretarisDefault.trim(),
+            jabatanSekretarisDefault = jabatanSekretarisDefault.trim(),
+            tampilkanSekretaris = tampilkanSekretaris,
+            ttdKetuaDefault = ttdKetuaDefault,
+            ttdSekretarisDefault = ttdSekretarisDefault,
+            fontStyle = fontStyle,
+            ukuranKertas = ukuranKertas,
+            marginMm = marginMm.coerceIn(10, 40),
+            pedomanFormat = pedomanFormat.trim()
+        )
         repository.mutate(listOf(PendingMutation("suratTemplates", tplId, "upsert"))) { db ->
-            db.copy(suratTemplates = db.suratTemplates + tpl)
+            val exists = db.suratTemplates.any { it.id == tplId }
+            val next = if (exists) db.suratTemplates.map { if (it.id == tplId) tpl else it } else db.suratTemplates + tpl
+            db.copy(suratTemplates = next)
         }
-        showToast("Template format surat berhasil disimpan!")
+        showToast("Template pedoman format surat berhasil disimpan!")
+    }
+
+    fun deleteTemplateSurat(id: String) {
+        repository.mutate(listOf(PendingMutation("suratTemplates", id, "delete"))) { db ->
+            db.copy(suratTemplates = db.suratTemplates.filterNot { it.id == id })
+        }
+        showToast("Template surat dihapus.")
     }
 
     // =========================================================================
@@ -1315,5 +1464,256 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             listOf(i.kodeAset, i.nama, i.kategori, i.jumlah.toString(), i.satuan, i.lokasi, i.kondisi, i.nilaiEstimasi.toString(), i.pj, i.keterangan)
         }
         return toCsv(headers, rows)
+    }
+
+    // =========================================================================
+    // KEAMANAN, ENKRIPSI & BIOMETRIK
+    // =========================================================================
+    fun getSecurityManager(): MmqaSecurityManager = repository.securityManager
+
+    fun getBiometricCapability(): BiometricCapability = repository.securityManager.checkBiometricCapability()
+
+    fun setBiometricLockEnabled(enabled: Boolean) {
+        val next = _securitySettings.value.copy(biometricLockEnabled = enabled)
+        repository.securityManager.saveSettings(next)
+        _securitySettings.value = next
+        if (!enabled) _isAppLocked.value = false
+        showToast(if (enabled) "Kunci Biometrik Aplikasi diaktifkan!" else "Kunci Biometrik Aplikasi dinonaktifkan.")
+    }
+
+    fun setBiometricQuickLoginEnabled(enabled: Boolean) {
+        val activeUsername = _uiState.value.currentUser?.username ?: _securitySettings.value.savedUsername
+        val next = _securitySettings.value.copy(
+            biometricQuickLoginEnabled = enabled,
+            savedUsername = activeUsername
+        )
+        repository.securityManager.saveSettings(next)
+        _securitySettings.value = next
+        showToast(
+            if (enabled) "Login Cepat Biometrik aktif untuk akun @$activeUsername!"
+            else "Login Cepat Biometrik dinonaktifkan."
+        )
+    }
+
+    fun unlockAppWithBiometric() {
+        _isAppLocked.value = false
+    }
+
+    fun lockAppNow() {
+        _isAppLocked.value = true
+    }
+
+    fun loginWithBiometricSavedUser(): Boolean {
+        val saved = _securitySettings.value.savedUsername.trim()
+        if (saved.isBlank()) {
+            showToast("Belum ada akun tersimpan untuk login biometrik. Masuk sekali dengan password terlebih dahulu.", isError = true)
+            return false
+        }
+        val user = database.value.users.firstOrNull { it.username.equals(saved, ignoreCase = true) }
+        if (user == null) {
+            showToast("Akun @$saved tidak ditemukan di database.", isError = true)
+            return false
+        }
+        enterApp(user)
+        return true
+    }
+
+    // =========================================================================
+    // ABSENSI SCAN BARCODE (LIVE SYNCED WITH DATABASE)
+    // =========================================================================
+    fun recordBarcodeAttendance(
+        tipe: String,
+        targetId: String,
+        firqohId: String,
+        nama: String,
+        status: String
+    ) {
+        val st = _uiState.value
+        val existing = getAbsensiRecord(tipe, targetId)
+        val recId = existing?.id ?: "ABS-${System.currentTimeMillis()}-${(100..999).random()}"
+        val scanNote = "Scan Barcode (${MmqaConstants.nowTimeHm()})"
+        val updatedRec = existing?.copy(status = status, catatan = scanNote) ?: AbsensiRecord(
+            id = recId,
+            tanggal = st.absensiTanggal,
+            sesi = st.absensiSesi,
+            tipe = tipe,
+            targetId = targetId,
+            firqohId = firqohId,
+            status = status,
+            catatan = scanNote
+        )
+        repository.mutate(listOf(PendingMutation("absensi", recId, "upsert"))) { db ->
+            val list = db.absensi.toMutableList()
+            val idx = list.indexOfFirst { it.id == recId }
+            if (idx >= 0) list[idx] = updatedRec else list.add(updatedRec)
+            db.copy(absensi = list)
+        }
+        showToast("✅ Barcode: $nama dicatat $status (${st.absensiSesi})")
+    }
+
+    // =========================================================================
+    // JUKNIS / MATERI RAPAT PDF & REKAP SANTRI BERMASALAH (LIVE RULE ENGINE)
+    // =========================================================================
+    fun getActiveJuknisAcuan(): JuknisDocumentItem = JuknisRuleEngine.getActiveAcuan(database.value.juknisDocs)
+
+    fun getProblematicSantri(firqohFilter: String): List<SantriViolationResult> {
+        val db = database.value
+        val ruleDoc = JuknisRuleEngine.getActiveAcuan(db.juknisDocs)
+        return db.santri
+            .filter { matchesFirqohFilter(it.firqohId, firqohFilter) }
+            .mapNotNull { santri ->
+                val stats = calcAttendanceStats("santri", santri.id)
+                JuknisRuleEngine.evaluateSantri(
+                    santri = santri,
+                    hadir = stats.hadir,
+                    izin = stats.izin,
+                    sakit = stats.sakit,
+                    alpha = stats.alpha,
+                    acuan = ruleDoc,
+                    firqohName = getFirqohName(santri.firqohId)
+                )
+            }
+            .sortedWith(
+                compareByDescending<SantriViolationResult> { it.severityLevel }
+                    .thenByDescending { it.alphaCount }
+                    .thenByDescending { it.izinCount }
+                    .thenBy { it.santri.nama }
+            )
+    }
+
+    fun saveJuknisDoc(
+        id: String?,
+        judul: String,
+        kategori: String,
+        nomorDokumen: String,
+        tanggal: String,
+        deskripsi: String,
+        pdfName: String,
+        pdfDataUrl: String,
+        isPublicOnLogin: Boolean,
+        isAcuanAturan: Boolean,
+        batasAlphaSp1: Int,
+        batasAlphaSp2: Int,
+        batasAlphaSp3: Int,
+        batasIzinPeringatan: Int,
+        konsekuensiSp1: String,
+        konsekuensiSp2: String,
+        konsekuensiSp3: String,
+        konsekuensiIzin: String
+    ) {
+        val itemId = id?.takeIf { it.isNotBlank() } ?: "JUK-${System.currentTimeMillis()}"
+        val cleanSp1 = batasAlphaSp1.coerceAtLeast(1)
+        val cleanSp2 = batasAlphaSp2.coerceAtLeast(cleanSp1 + 1)
+        val cleanSp3 = batasAlphaSp3.coerceAtLeast(cleanSp2 + 1)
+        val cleanIzin = batasIzinPeringatan.coerceAtLeast(1)
+        val newItem = JuknisDocumentItem(
+            id = itemId,
+            judul = judul.trim(),
+            kategori = kategori.trim().ifBlank { "Juknis" },
+            nomorDokumen = nomorDokumen.trim(),
+            tanggal = tanggal.ifBlank { MmqaConstants.todayStr() },
+            deskripsi = deskripsi.trim(),
+            pdfName = pdfName.trim(),
+            pdfDataUrl = pdfDataUrl,
+            uploadedBy = _uiState.value.currentUser?.name ?: "Dewan Harian",
+            isPublicOnLogin = isPublicOnLogin,
+            isAcuanAturan = isAcuanAturan,
+            batasAlphaSp1 = cleanSp1,
+            batasAlphaSp2 = cleanSp2,
+            batasAlphaSp3 = cleanSp3,
+            batasIzinPeringatan = cleanIzin,
+            konsekuensiSp1 = konsekuensiSp1.trim().ifBlank { "Teguran Lisan & Pembinaan Mu'allim" },
+            konsekuensiSp2 = konsekuensiSp2.trim().ifBlank { "Surat Peringatan (SP1) & Panggilan Wali" },
+            konsekuensiSp3 = konsekuensiSp3.trim().ifBlank { "Sidang Dewan Harian & Takzir Berat" },
+            konsekuensiIzin = konsekuensiIzin.trim().ifBlank { "Evaluasi Kehadiran & Konfirmasi Wali Santri" }
+        )
+
+        val mutations = mutableListOf(PendingMutation("juknisDocs", itemId, "upsert"))
+        repository.mutate(mutations) { db ->
+            val updatedExisting = db.juknisDocs.map { doc ->
+                if (isAcuanAturan && doc.id != itemId && doc.isAcuanAturan) {
+                    mutations.add(PendingMutation("juknisDocs", doc.id, "upsert"))
+                    doc.copy(isAcuanAturan = false)
+                } else doc
+            }.toMutableList()
+            val idx = updatedExisting.indexOfFirst { it.id == itemId }
+            if (idx >= 0) updatedExisting[idx] = newItem else updatedExisting.add(0, newItem)
+            db.copy(juknisDocs = updatedExisting)
+        }
+        showToast(
+            if (isAcuanAturan) "Juknis disimpan & aturan Dashboard otomatis disinkronkan!"
+            else "Dokumen Juknis/Materi Rapat berhasil disimpan!"
+        )
+    }
+
+    fun setActiveJuknisAcuan(docId: String) {
+        val dbSnapshot = database.value
+        if (dbSnapshot.juknisDocs.none { it.id == docId }) return
+        val mutations = dbSnapshot.juknisDocs
+            .filter { it.id == docId || it.isAcuanAturan }
+            .map { PendingMutation("juknisDocs", it.id, "upsert") }
+        repository.mutate(mutations) { db ->
+            db.copy(
+                juknisDocs = db.juknisDocs.map { doc ->
+                    doc.copy(isAcuanAturan = doc.id == docId)
+                }
+            )
+        }
+        showToast("Acuan peraturan Dashboard berhasil diperbarui!")
+    }
+
+    fun deleteJuknisDoc(id: String) {
+        repository.mutate(listOf(PendingMutation("juknisDocs", id, "delete"))) { db ->
+            db.copy(juknisDocs = db.juknisDocs.filterNot { it.id == id })
+        }
+        showToast("Dokumen Juknis dihapus.")
+    }
+
+    // =========================================================================
+    // MENU JADWAL KEGIATAN (MMQA HARIAN, UJIAN, ABSENSI, EVENT)
+    // =========================================================================
+    fun saveJadwal(
+        id: String?,
+        kategori: String,
+        judul: String,
+        hari: String,
+        tanggal: String,
+        jamMulai: String,
+        jamSelesai: String,
+        tempat: String,
+        firqohId: String,
+        penanggungJawab: String,
+        keterangan: String,
+        isPublicOnLogin: Boolean
+    ) {
+        val itemId = id?.takeIf { it.isNotBlank() } ?: "JDW-${System.currentTimeMillis()}"
+        val item = JadwalItem(
+            id = itemId,
+            kategori = kategori.trim().ifBlank { "MMQA Harian" },
+            judul = judul.trim(),
+            hari = hari.trim().ifBlank { "Setiap Hari" },
+            tanggal = tanggal.trim(),
+            jamMulai = jamMulai.trim().ifBlank { "07:00" },
+            jamSelesai = jamSelesai.trim().ifBlank { "08:30" },
+            tempat = tempat.trim().ifBlank { "Aula Utama MMQA" },
+            firqohId = firqohId.ifBlank { "ALL" },
+            penanggungJawab = penanggungJawab.trim().ifBlank { _uiState.value.currentUser?.name ?: "Dewan Harian" },
+            keterangan = keterangan.trim(),
+            isPublicOnLogin = isPublicOnLogin
+        )
+        repository.mutate(listOf(PendingMutation("jadwal", itemId, "upsert"))) { db ->
+            val list = db.jadwal.toMutableList()
+            val idx = list.indexOfFirst { it.id == itemId }
+            if (idx >= 0) list[idx] = item else list.add(0, item)
+            db.copy(jadwal = list)
+        }
+        showToast("Jadwal kegiatan berhasil disimpan!")
+    }
+
+    fun deleteJadwal(id: String) {
+        repository.mutate(listOf(PendingMutation("jadwal", id, "delete"))) { db ->
+            db.copy(jadwal = db.jadwal.filterNot { it.id == id })
+        }
+        showToast("Jadwal dihapus.")
     }
 }

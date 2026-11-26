@@ -14,7 +14,8 @@ object MmqaConstants {
         "users", "santri", "muallim", "dewanHarian", "firqoh",
         "absensi", "materi", "ujianMateri", "ujianFormat",
         "nilaiUjian", "keuangan", "suratTemplates", "suratArsip",
-        "inventaris", "personalia", "chatChannels", "chatMessages", "adminConfig"
+        "inventaris", "personalia", "juknisDocs", "jadwal",
+        "chatChannels", "chatMessages", "adminConfig"
     )
 
     fun todayStr(): String =
@@ -112,6 +113,143 @@ data class PersonaliaItem(
     val kontak: String = "",
     val urutan: Int = 1
 )
+
+data class JuknisDocumentItem(
+    val id: String,
+    val judul: String,
+    val kategori: String = "Juknis", // "Juknis" | "Materi Rapat" | "Peraturan & Tata Tertib" | "Pengumuman Penting"
+    val nomorDokumen: String = "",
+    val tanggal: String = MmqaConstants.todayStr(),
+    val deskripsi: String = "",
+    val pdfName: String = "",
+    val pdfDataUrl: String = "",
+    val isPublicOnLogin: Boolean = true,
+    val uploadedBy: String = "Dewan Harian",
+    val isAcuanAturan: Boolean = false,
+    val batasAlphaSp1: Int = 3,
+    val batasAlphaSp2: Int = 5,
+    val batasAlphaSp3: Int = 8,
+    val batasIzinPeringatan: Int = 4,
+    val konsekuensiSp1: String = "Teguran lisan Mu'allim & pembinaan adab harian",
+    val konsekuensiSp2: String = "Surat Peringatan (SP-1) & pemanggilan wali santri",
+    val konsekuensiSp3: String = "Sidang Dewan Harian & takzir khusus / skorsing",
+    val konsekuensiIzin: String = "Klarifikasi wali santri & pembatasan izin keluar"
+)
+
+data class JadwalItem(
+    val id: String,
+    val judul: String,
+    val kategori: String = "MMQA Harian", // "MMQA Harian" | "Ujian" | "Absensi" | "Event Khusus"
+    val hari: String = "Senin - Sabtu",
+    val tanggal: String = MmqaConstants.todayStr(),
+    val jamMulai: String = "05:30",
+    val jamSelesai: String = "07:00",
+    val tempat: String = "Majelis Utama AR2",
+    val firqohId: String = "ALL",
+    val penanggungJawab: String = "Dewan Harian MMQA",
+    val keterangan: String = "",
+    val isPublicOnLogin: Boolean = true
+)
+
+data class SantriViolationResult(
+    val santri: SantriItem,
+    val firqohName: String = "",
+    val alphaCount: Int,
+    val izinCount: Int,
+    val sakitCount: Int,
+    val hadirCount: Int,
+    val severityRank: Int, // 3 = SP3/Berat, 2 = SP2/Sedang, 1 = SP1/Ringan, 0 = Batas Izin
+    val levelBadge: String,
+    val pelanggaranSummary: String,
+    val konsekuensi: String,
+    val consequences: List<String> = emptyList(),
+    val acuanJudul: String
+) {
+    val severityLevel: Int get() = severityRank
+    val levelLabel: String get() = levelBadge
+}
+
+object JuknisRuleEngine {
+    fun getActiveAcuan(docs: List<JuknisDocumentItem>): JuknisDocumentItem {
+        return docs.firstOrNull { it.isAcuanAturan }
+            ?: docs.firstOrNull { it.kategori.contains("Peraturan", ignoreCase = true) || it.kategori.equals("Juknis", ignoreCase = true) }
+            ?: JuknisDocumentItem(
+                id = "JUK-DEFAULT-RULE",
+                judul = "Juknis Tata Tertib & Kehadiran MMQA AR2",
+                kategori = "Peraturan & Tata Tertib",
+                nomorDokumen = "001/JUKNIS/MMQA-AR2/2026",
+                isAcuanAturan = true
+            )
+    }
+
+    fun evaluateSantri(
+        santri: SantriItem,
+        hadir: Int,
+        izin: Int,
+        sakit: Int,
+        alpha: Int,
+        acuan: JuknisDocumentItem,
+        firqohName: String = ""
+    ): SantriViolationResult? {
+        val sp1 = acuan.batasAlphaSp1.coerceAtLeast(1)
+        val sp2 = acuan.batasAlphaSp2.coerceAtLeast(sp1 + 1)
+        val sp3 = acuan.batasAlphaSp3.coerceAtLeast(sp2 + 1)
+        val maxIzin = acuan.batasIzinPeringatan.coerceAtLeast(1)
+
+        val reasons = mutableListOf<String>()
+        val actions = mutableListOf<String>()
+        var severity = -1
+        var badge = ""
+
+        when {
+            alpha >= sp3 -> {
+                severity = 3
+                badge = "TINGKAT BERAT (A≥$sp3)"
+                reasons.add("Alpha $alpha kali (batas ≥$sp3)")
+                actions.add(acuan.konsekuensiSp3)
+            }
+            alpha >= sp2 -> {
+                severity = 2
+                badge = "PERINGATAN 2 (A≥$sp2)"
+                reasons.add("Alpha $alpha kali (batas ≥$sp2)")
+                actions.add(acuan.konsekuensiSp2)
+            }
+            alpha >= sp1 -> {
+                severity = 1
+                badge = "PERINGATAN 1 (A≥$sp1)"
+                reasons.add("Alpha $alpha kali (batas ≥$sp1)")
+                actions.add(acuan.konsekuensiSp1)
+            }
+        }
+
+        if (izin >= maxIzin) {
+            if (severity < 0) {
+                severity = 0
+                badge = "BATAS IZIN (I≥$maxIzin)"
+            }
+            reasons.add("Izin $izin kali (batas ≥$maxIzin)")
+            actions.add(acuan.konsekuensiIzin)
+        }
+
+        if (severity < 0) return null
+
+        val distinctActions = actions.distinct()
+        return SantriViolationResult(
+            santri = santri,
+            firqohName = firqohName,
+            alphaCount = alpha,
+            izinCount = izin,
+            sakitCount = sakit,
+            hadirCount = hadir,
+            severityRank = severity,
+            levelBadge = badge,
+            pelanggaranSummary = reasons.joinToString(" • "),
+            konsekuensi = distinctActions.joinToString(" + "),
+            consequences = distinctActions,
+            acuanJudul = acuan.judul
+        )
+    }
+}
 
 object FirqohFilterHelper {
     const val GROUP_PREFIX = "GROUP:"
@@ -341,7 +479,24 @@ data class SuratTemplateItem(
     val perihalDefault: String,
     val isiDefault: String,
     val pdfName: String = "",
-    val pdfDataUrl: String = ""
+    val pdfDataUrl: String = "",
+    val kopBaris1: String = "MAJELIS MUSYAWARAH QIRA'ATIL KUTUB & AL-QUR'AN",
+    val kopBaris2: String = "MMQA AL RIFAI 02 (AR2)",
+    val kopBaris3: String = "Sekretariat Dewan Harian Majelis • Sistem Administrasi Terpadu",
+    val kotaDefault: String = "Malang",
+    val lampiranDefault: String = "-",
+    val tujuanDefault: String = "Yth. Seluruh Mu’allim Firqoh MMQA AR2",
+    val penandatanganDefault: String = "Ust. H. Ahmad Fauzi, M.Pd",
+    val jabatanDefault: String = "Ketua Dewan Harian MMQA",
+    val sekretarisDefault: String = "Ust. Muhammad Ridwan",
+    val jabatanSekretarisDefault: String = "Sekretaris Umum MMQA",
+    val tampilkanSekretaris: Boolean = true,
+    val ttdKetuaDefault: String = "",
+    val ttdSekretarisDefault: String = "",
+    val fontStyle: String = "Times New Roman (Resmi)",
+    val ukuranKertas: String = "A4",
+    val marginMm: Int = 20,
+    val pedomanFormat: String = ""
 )
 
 data class SuratArsipItem(
@@ -357,7 +512,19 @@ data class SuratArsipItem(
     val jabatanPenandatangan: String,
     val templateId: String = "",
     val pdfName: String = "",
-    val pdfDataUrl: String = ""
+    val pdfDataUrl: String = "",
+    val kopBaris1: String = "MAJELIS MUSYAWARAH QIRA'ATIL KUTUB & AL-QUR'AN",
+    val kopBaris2: String = "MMQA AL RIFAI 02 (AR2)",
+    val kopBaris3: String = "Sekretariat Dewan Harian Majelis • Sistem Administrasi Terpadu",
+    val kotaTanggal: String = "Malang",
+    val sekretaris: String = "Ust. Muhammad Ridwan",
+    val jabatanSekretaris: String = "Sekretaris Umum MMQA",
+    val tampilkanSekretaris: Boolean = true,
+    val ttdKetuaDataUrl: String = "",
+    val ttdSekretarisDataUrl: String = "",
+    val fontStyle: String = "Times New Roman (Resmi)",
+    val ukuranKertas: String = "A4",
+    val marginMm: Int = 20
 )
 
 data class InventarisItem(
@@ -492,6 +659,8 @@ data class MmqaDatabase(
     val suratArsip: List<SuratArsipItem> = emptyList(),
     val inventaris: List<InventarisItem> = emptyList(),
     val personalia: List<PersonaliaItem> = emptyList(),
+    val juknisDocs: List<JuknisDocumentItem> = emptyList(),
+    val jadwal: List<JadwalItem> = emptyList(),
     val chatChannels: List<ChatChannelItem> = emptyList(),
     val chatMessages: List<ChatMessageItem> = emptyList(),
     val adminConfig: AdminConfig = MmqaDefaults.defaultAdminConfig()
@@ -506,9 +675,12 @@ data class PendingMutation(
 
 object MmqaDefaults {
     fun defaultAnakSub(): List<AnakSubConfigItem> = listOf(
+        // Dashboard
+        AnakSubConfigItem("dashboard_keuangan_view", "dashboard", "keuangan", "Tampilkan Kartu & Rekap Keuangan di Dashboard", "dewan_harian", true),
         // Absensi
         AnakSubConfigItem("absensi_santri_edit", "absensi", "santri", "Input & Ubah Status Presensi Santri", "all", true),
         AnakSubConfigItem("absensi_santri_mark_all", "absensi", "santri", "Tombol Semua Hadir Santri", "all", true),
+        AnakSubConfigItem("absensi_barcode_scan", "absensi", "santri", "Scan Barcode & Cetak Kartu Barcode Absensi", "all", true),
         AnakSubConfigItem("absensi_pengurus_edit", "absensi", "muallim", "Input Presensi Mu'allim & Dewan Harian", "dewan_harian", true),
         // Materi
         AnakSubConfigItem("materi_manage", "materi", "utama", "Tambah & Edit Materi Perfirqoh", "all", true),
@@ -537,6 +709,14 @@ object MmqaDefaults {
         // Data Induk
         AnakSubConfigItem("induk_kelola", "induk", "santri", "Tambah & Edit Data Induk (Santri/Mu'allim/Dewan/Firqoh)", "dewan_harian", true),
         AnakSubConfigItem("induk_hapus", "induk", "santri", "Hapus Record Data Induk", "dewan_harian", true),
+        // Jadwal Kegiatan
+        AnakSubConfigItem("jadwal_manage", "jadwal", "utama", "Tambah & Edit Jadwal Kegiatan MMQA", "dewan_harian", true),
+        AnakSubConfigItem("jadwal_delete", "jadwal", "utama", "Hapus Jadwal Kegiatan", "dewan_harian", true),
+        AnakSubConfigItem("jadwal_export", "jadwal", "utama", "Kirim WA & Unduh PDF Jadwal", "all", true),
+        // Juknis & Materi Rapat PDF
+        AnakSubConfigItem("juknis_upload", "juknis", "utama", "Upload, Edit & Atur Acuan Peraturan Juknis PDF", "dewan_harian", true),
+        AnakSubConfigItem("juknis_delete", "juknis", "utama", "Hapus Dokumen Juknis & Materi Rapat", "dewan_harian", true),
+        AnakSubConfigItem("juknis_download", "juknis", "utama", "Lihat Langsung & Unduh Juknis PDF", "all", true),
         // Struktur Personalia MMQA
         AnakSubConfigItem("personalia_manage", "personalia", "utama", "Tambah & Edit Struktur Personalia MMQA", "dewan_harian", true),
         AnakSubConfigItem("personalia_delete", "personalia", "utama", "Hapus Pengurus Struktur Personalia", "dewan_harian", true),
@@ -553,15 +733,17 @@ object MmqaDefaults {
         menus = listOf(
             MenuConfigItem("dashboard", "Dashboard Kehadiran", "📊", "all", true, 1),
             MenuConfigItem("absensi", "Absensi Bertingkat", "📝", "all", true, 2),
-            MenuConfigItem("materi", "Materi Perfirqoh", "📚", "all", true, 3),
-            MenuConfigItem("ujian", "Ujian & Penilaian", "🎓", "all", true, 4),
-            MenuConfigItem("keuangan", "Keuangan & Syahriah", "💰", "all", true, 5),
-            MenuConfigItem("surat", "Surat Menyurat", "✉️", "all", true, 6),
-            MenuConfigItem("inventaris", "Inventaris Modern", "🏛️", "all", true, 7),
-            MenuConfigItem("induk", "Data Induk", "🗂️", "all", true, 8),
-            MenuConfigItem("personalia", "Struktur Personalia MMQA", "🧑‍💼", "all", true, 9),
-            MenuConfigItem("chat", "Grup Chat Majelis", "💬", "all", true, 10),
-            MenuConfigItem("admin", "Kontrol Admin", "🛡️", "dewan_harian", true, 11)
+            MenuConfigItem("jadwal", "Jadwal Kegiatan", "🗓️", "all", true, 3),
+            MenuConfigItem("juknis", "Juknis & Rapat PDF", "📘", "all", true, 4),
+            MenuConfigItem("materi", "Materi Perfirqoh", "📚", "all", true, 5),
+            MenuConfigItem("ujian", "Ujian & Penilaian", "🎓", "all", true, 6),
+            MenuConfigItem("keuangan", "Keuangan & Syahriah", "💰", "all", true, 7),
+            MenuConfigItem("surat", "Surat Menyurat", "✉️", "all", true, 8),
+            MenuConfigItem("inventaris", "Inventaris Modern", "🏛️", "all", true, 9),
+            MenuConfigItem("induk", "Data Induk", "🗂️", "all", true, 10),
+            MenuConfigItem("personalia", "Struktur Personalia MMQA", "🧑‍💼", "all", true, 11),
+            MenuConfigItem("chat", "Grup Chat Majelis", "💬", "all", true, 12),
+            MenuConfigItem("admin", "Kontrol Admin", "🛡️", "dewan_harian", true, 13)
         ),
         submenus = SubmenuGroups(
             absensi = listOf(
@@ -695,28 +877,79 @@ object MmqaDefaults {
             ),
             suratTemplates = listOf(
                 SuratTemplateItem(
-                    "TPL-A1", "A", "Template Undangan Rapat Dewan & Mu’allim",
-                    "Undangan Rapat Koordinasi Evaluasi KBM & Persiapan Ujian",
-                    "Assalamu’alaikum Warahmatullahi Wabarakatuh.\n\nDengan memohon rahmat dan ridho Allah SWT, mengharap dengan hormat kehadiran Bapak/Ustadz pada:\n\nHari / Tanggal : Ahad, 29 November 2026\nWaktu          : Pukul 20.00 WIB (Ba’da Isya)\nTempat         : Majelis Utama MMQA Al Rifai 02\nAcara          : Koordinasi Evaluasi Kehadiran & Teknis Ujian Perfirqoh\n\nDemikian undangan ini kami sampaikan. Atas perhatian dan kehadirannya kami haturkan Jazakumullahu Khairan Katsiran.\n\nWassalamu’alaikum Warahmatullahi Wabarakatuh."
+                    id = "TPL-A1",
+                    kodeSurat = "A",
+                    nama = "Template Undangan Rapat Dewan & Mu’allim",
+                    perihalDefault = "Undangan Rapat Koordinasi Evaluasi KBM & Persiapan Ujian",
+                    isiDefault = "Assalamu’alaikum Warahmatullahi Wabarakatuh.\n\nDengan memohon rahmat dan ridho Allah SWT, mengharap dengan hormat kehadiran Bapak/Ustadz pada:\n\nHari / Tanggal : Ahad, 29 November 2026\nWaktu          : Pukul 20.00 WIB (Ba’da Isya)\nTempat         : Majelis Utama MMQA Al Rifai 02\nAcara          : Koordinasi Evaluasi Kehadiran & Teknis Ujian Perfirqoh\n\nDemikian undangan ini kami sampaikan. Atas perhatian dan kehadirannya kami haturkan Jazakumullahu Khairan Katsiran.\n\nWassalamu’alaikum Warahmatullahi Wabarakatuh.",
+                    kotaDefault = "Malang",
+                    lampiranDefault = "1 Lembar",
+                    tujuanDefault = "Yth. Seluruh Mu’allim Firqoh & Dewan Harian MMQA AR2",
+                    penandatanganDefault = "Ust. H. Ahmad Fauzi, M.Pd",
+                    jabatanDefault = "Ketua Dewan Harian MMQA",
+                    sekretarisDefault = "Ust. Muhammad Ridwan",
+                    jabatanSekretarisDefault = "Sekretaris Umum MMQA",
+                    tampilkanSekretaris = true,
+                    fontStyle = "Times New Roman (Resmi)",
+                    ukuranKertas = "A4",
+                    marginMm = 20,
+                    pedomanFormat = "Format resmi A4 margin 20mm, Times New Roman. Wajib mencantumkan nomor Kode A, rincian Hari/Tanggal/Waktu/Tempat/Acara, serta TTD Ketua & Sekretaris berdampingan."
                 ),
                 SuratTemplateItem(
-                    "TPL-B1", "B", "Template Pemberitahuan Wali Santri",
-                    "Pemberitahuan Pelaksanaan Ujian Semester & Administrasi Syahriah",
-                    "Assalamu’alaikum Warahmatullahi Wabarakatuh.\n\nTeriring doa semoga Bapak/Ibu Wali Santri senantiasa dalam lindungan Allah SWT. Bersama surat ini kami memberitahukan bahwa pelaksanaan Ujian Akhir Semester MMQA Al Rifai 02 akan dilaksanakan mulai pekan depan.\n\nDimohon kepada Bapak/Ibu untuk senantiasa memotivasi putra-putrinya dalam muraja’ah materi perfirqoh.\n\nWassalamu’alaikum Warahmatullahi Wabarakatuh."
+                    id = "TPL-B1",
+                    kodeSurat = "B",
+                    nama = "Template Pemberitahuan Wali Santri",
+                    perihalDefault = "Pemberitahuan Pelaksanaan Ujian Semester & Administrasi Syahriah",
+                    isiDefault = "Assalamu’alaikum Warahmatullahi Wabarakatuh.\n\nTeriring doa semoga Bapak/Ibu Wali Santri senantiasa dalam lindungan Allah SWT. Bersama surat ini kami memberitahukan bahwa pelaksanaan Ujian Akhir Semester MMQA Al Rifai 02 akan dilaksanakan mulai pekan depan.\n\nDimohon kepada Bapak/Ibu untuk senantiasa memotivasi putra-putrinya dalam muraja’ah materi perfirqoh.\n\nWassalamu’alaikum Warahmatullahi Wabarakatuh.",
+                    kotaDefault = "Malang",
+                    lampiranDefault = "-",
+                    tujuanDefault = "Yth. Bapak/Ibu Wali Santri MMQA Al Rifai 02",
+                    penandatanganDefault = "Ust. H. Ahmad Fauzi, M.Pd",
+                    jabatanDefault = "Ketua Dewan Harian MMQA",
+                    sekretarisDefault = "Ust. Muhammad Ridwan",
+                    jabatanSekretarisDefault = "Sekretaris Umum MMQA",
+                    tampilkanSekretaris = true,
+                    fontStyle = "Times New Roman (Resmi)",
+                    ukuranKertas = "A4",
+                    marginMm = 22,
+                    pedomanFormat = "Format pemberitahuan resmi ke wali santri menggunakan Kode B, bahasa santun dengan salam pembuka/penutup lengkap, ditandatangani Ketua & Sekretaris."
                 ),
                 SuratTemplateItem(
-                    "TPL-C1", "C", "Template Instruksi Harian Majelis",
-                    "Instruksi Penertiban Absensi Harian & Input Nilai Ujian",
-                    "Assalamu’alaikum Warahmatullahi Wabarakatuh.\n\nBerdasarkan hasil musyawarah Dewan Harian MMQA Al Rifai 02, diinstruksikan kepada seluruh Mu’allim Firqoh untuk:\n1. Mengisi presensi santri setiap sesi melalui aplikasi MMQA AR2.\n2. Menyelesaikan input nilai rubrik ujian paling lambat H+3 setelah pelaksanaan ujian.\n\nDemikian instruksi ini disampaikan untuk dilaksanakan dengan penuh tanggung jawab.\n\nWassalamu’alaikum Warahmatullahi Wabarakatuh."
+                    id = "TPL-C1",
+                    kodeSurat = "C",
+                    nama = "Template Instruksi Harian Majelis",
+                    perihalDefault = "Instruksi Penertiban Absensi Harian & Input Nilai Ujian",
+                    isiDefault = "Assalamu’alaikum Warahmatullahi Wabarakatuh.\n\nBerdasarkan hasil musyawarah Dewan Harian MMQA Al Rifai 02, diinstruksikan kepada seluruh Mu’allim Firqoh untuk:\n1. Mengisi presensi santri setiap sesi melalui aplikasi MMQA AR2.\n2. Menyelesaikan input nilai rubrik ujian paling lambat H+3 setelah pelaksanaan ujian.\n\nDemikian instruksi ini disampaikan untuk dilaksanakan dengan penuh tanggung jawab.\n\nWassalamu’alaikum Warahmatullahi Wabarakatuh.",
+                    kotaDefault = "Malang",
+                    lampiranDefault = "-",
+                    tujuanDefault = "Yth. Seluruh Mu’allim & Pengurus Firqoh MMQA AR2",
+                    penandatanganDefault = "Ust. H. Ahmad Fauzi, M.Pd",
+                    jabatanDefault = "Ketua Dewan Harian MMQA",
+                    sekretarisDefault = "Ust. Muhammad Ridwan",
+                    jabatanSekretarisDefault = "Sekretaris Umum MMQA",
+                    tampilkanSekretaris = true,
+                    fontStyle = "Times New Roman (Resmi)",
+                    ukuranKertas = "F4 / Folio",
+                    marginMm = 20,
+                    pedomanFormat = "Format instruksi internal (Kode C) memakai poin bernomor 1, 2, 3 yang tegas, kertas F4/Folio, ditandatangani Ketua Dewan Harian & Sekretaris Umum."
                 )
             ),
             suratArsip = listOf(
                 SuratArsipItem(
-                    "SRT-01", "A", "001/A/MMQA-AR2/XI/2026", today, "1 Berkas",
-                    "Undangan Rapat Koordinasi Dewan Harian & Mu’allim",
-                    "Seluruh Mu’allim Firqoh 1 - 4 MMQA AR2",
-                    "Assalamu’alaikum Warahmatullahi Wabarakatuh.\n\nMengharap dengan hormat kehadiran seluruh Mu’allim Firqoh pada rapat evaluasi pembelajaran dan persiapan ujian perfirqoh di Majelis Utama MMQA Al Rifai 02.\n\nWassalamu’alaikum Warahmatullahi Wabarakatuh.",
-                    "Ust. H. Ahmad Fauzi, M.Pd", "Ketua Dewan Harian MMQA", "TPL-A1"
+                    id = "SRT-01",
+                    kodeSurat = "A",
+                    nomorSurat = "001/A/MMQA-AR2/XI/2026",
+                    tanggal = today,
+                    lampiran = "1 Berkas",
+                    perihal = "Undangan Rapat Koordinasi Dewan Harian & Mu’allim",
+                    tujuan = "Seluruh Mu’allim Firqoh 1 - 4 MMQA AR2",
+                    isi = "Assalamu’alaikum Warahmatullahi Wabarakatuh.\n\nMengharap dengan hormat kehadiran seluruh Mu’allim Firqoh pada rapat evaluasi pembelajaran dan persiapan ujian perfirqoh di Majelis Utama MMQA Al Rifai 02.\n\nWassalamu’alaikum Warahmatullahi Wabarakatuh.",
+                    penandatangan = "Ust. H. Ahmad Fauzi, M.Pd",
+                    jabatanPenandatangan = "Ketua Dewan Harian MMQA",
+                    templateId = "TPL-A1",
+                    sekretaris = "Ust. Muhammad Ridwan",
+                    jabatanSekretaris = "Sekretaris Umum MMQA",
+                    tampilkanSekretaris = true
                 )
             ),
             inventaris = listOf(
@@ -730,6 +963,100 @@ object MmqaDefaults {
                 PersonaliaItem("PRS-03", "STR-03", "Ust. Abdul Karim", "Bendahara Majelis", "Keuangan & Syahriah", "2026 - 2027", "081122334403", 3),
                 PersonaliaItem("PRS-04", "STR-04", "Ust. Khoirul Anam", "Koordinator Kurikulum & Ujian", "Kurikulum & Pendidikan", "2026 - 2027", "081122334404", 4),
                 PersonaliaItem("PRS-05", "STR-05", "Ust. Zulkifli Hasan", "Koordinator Mu'allim Firqoh", "Koordinator Firqoh", "2026 - 2027", "085211002201", 5)
+            ),
+            juknisDocs = listOf(
+                JuknisDocumentItem(
+                    id = "JUK-01",
+                    judul = "Juknis Tata Tertib Kehadiran & Konsekuensi Pelanggaran MMQA AR2",
+                    kategori = "Peraturan & Tata Tertib",
+                    nomorDokumen = "001/JUKNIS/MMQA-AR2/XI/2026",
+                    tanggal = today,
+                    deskripsi = "Pedoman resmi batas maksimal Alpha dan Izin santri MMQA Al Rifai 02 beserta tahapan pembinaan, surat peringatan, dan takzir edukatif yang menjadi acuan otomatis Dashboard.",
+                    pdfName = "",
+                    pdfDataUrl = "",
+                    isPublicOnLogin = true,
+                    uploadedBy = "Ust. H. Ahmad Fauzi, M.Pd",
+                    isAcuanAturan = true,
+                    batasAlphaSp1 = 3,
+                    batasAlphaSp2 = 5,
+                    batasAlphaSp3 = 8,
+                    batasIzinPeringatan = 4,
+                    konsekuensiSp1 = "Teguran lisan Mu'allim & setoran hafalan tambahan",
+                    konsekuensiSp2 = "Surat Peringatan (SP-1) & pemanggilan wali santri",
+                    konsekuensiSp3 = "Sidang Dewan Harian & takzir khusus / pembinaan intensif",
+                    konsekuensiIzin = "Klarifikasi wali santri & pembatasan izin keluar pondok"
+                ),
+                JuknisDocumentItem(
+                    id = "JUK-02",
+                    judul = "Notulen & Materi Rapat Koordinasi Persiapan Ujian Semester",
+                    kategori = "Materi Rapat",
+                    nomorDokumen = "002/RAPAT/MMQA-AR2/XI/2026",
+                    tanggal = today,
+                    deskripsi = "Hasil rapat Dewan Harian dan Mu'allim mengenai teknis presensi barcode, jadwal ujian lisan/tulis perfirqoh, serta standar penilaian rubrik.",
+                    pdfName = "",
+                    pdfDataUrl = "",
+                    isPublicOnLogin = true,
+                    uploadedBy = "Ust. Muhammad Ridwan",
+                    isAcuanAturan = false
+                )
+            ),
+            jadwal = listOf(
+                JadwalItem(
+                    id = "JDW-01",
+                    judul = "KBM Majelis Pagi (Ba'da Subuh)",
+                    kategori = "MMQA Harian",
+                    hari = "Senin - Sabtu",
+                    tanggal = today,
+                    jamMulai = "05:15",
+                    jamSelesai = "06:30",
+                    tempat = "Ruang Firqoh Masing-Masing",
+                    firqohId = "ALL",
+                    penanggungJawab = "Seluruh Mu'allim Firqoh",
+                    keterangan = "Sorogan kitab, setoran hafalan nadhom, dan muraja'ah harian.",
+                    isPublicOnLogin = true
+                ),
+                JadwalItem(
+                    id = "JDW-02",
+                    judul = "Presensi Barcode & Apel Kedisiplinan",
+                    kategori = "Absensi",
+                    hari = "Setiap Hari Aktif",
+                    tanggal = today,
+                    jamMulai = "19:45",
+                    jamSelesai = "20:05",
+                    tempat = "Serambi Masjid Utama AR2",
+                    firqohId = "ALL",
+                    penanggungJawab = "Dewan Harian Piket",
+                    keterangan = "Santri & Mu'allim wajib membawa kartu barcode MMQA sebelum masuk kelas malam.",
+                    isPublicOnLogin = true
+                ),
+                JadwalItem(
+                    id = "JDW-03",
+                    judul = "Ujian Qira'atul Kutub & Muhafadzoh Perfirqoh",
+                    kategori = "Ujian",
+                    hari = "Ahad - Kamis",
+                    tanggal = today,
+                    jamMulai = "20:00",
+                    jamSelesai = "21:45",
+                    tempat = "Aula Al-Rifai Lt. 1 & 2",
+                    firqohId = "ALL",
+                    penanggungJawab = "Ust. Khoirul Anam",
+                    keterangan = "Penilaian rubrik berbobot sesuai materi ujian masing-masing firqoh.",
+                    isPublicOnLogin = true
+                ),
+                JadwalItem(
+                    id = "JDW-04",
+                    judul = "Rapat Evaluasi Bulanan Dewan Harian & Mu'allim",
+                    kategori = "Event Khusus",
+                    hari = "Ahad",
+                    tanggal = today,
+                    jamMulai = "20:00",
+                    jamSelesai = "22:00",
+                    tempat = "Majelis Utama MMQA Al Rifai 02",
+                    firqohId = "ALL",
+                    penanggungJawab = "Ust. H. Ahmad Fauzi, M.Pd",
+                    keterangan = "Evaluasi kehadiran santri bermasalah, sinkronisasi juknis & persiapan wisuda.",
+                    isPublicOnLogin = true
+                )
             ),
             chatChannels = listOf(
                 ChatChannelItem("CHN-UMUM", "Majelis Umum MMQA AR2", "Koordinasi seluruh Dewan Harian & Mu’allim"),

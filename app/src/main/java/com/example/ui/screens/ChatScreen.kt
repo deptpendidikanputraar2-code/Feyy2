@@ -77,96 +77,134 @@ fun ChatScreen(
     var showAddChannelModal by remember { mutableStateOf(false) }
 
     val channelPanel: @Composable () -> Unit = {
-        SectionCard(contentPadding = 14.dp) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
+        if (isWideScreen) {
+            Surface(
+                color = Color.White,
+                border = BorderStroke(1.dp, Slate200),
+                modifier = Modifier.fillMaxSize()
             ) {
-                Text(
-                    text = "💬 Ruang Diskusi Majelis",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Black,
-                    color = Slate900
-                )
-                if (canAddChannel) {
-                    Surface(
-                        color = Emerald100,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .defaultMinSize(minHeight = 36.dp)
-                            .clickable { showAddChannelModal = true }
-                            .testTag("add_chat_channel_button")
+                Column(modifier = Modifier.padding(14.dp).fillMaxSize()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Add,
-                                contentDescription = "Tambah Grup",
-                                tint = Emerald900,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = "Grup",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = Emerald900
+                        Text(
+                            text = "💬 Ruang Diskusi",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black,
+                            color = Slate900
+                        )
+                        if (canAddChannel) {
+                            Surface(
+                                color = Emerald100,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 36.dp)
+                                    .clickable { showAddChannelModal = true }
+                                    .testTag("add_chat_channel_button")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Add,
+                                        contentDescription = "Tambah Grup",
+                                        tint = Emerald900,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = "Grup",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Emerald900
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        channels.forEach { ch ->
+                            val active = ch.id == channelId
+                            ChannelSelectCard(
+                                channel = ch,
+                                active = active,
+                                onClick = {
+                                    viewModel.updateState { it.copy(chatChannel = ch.id, chatReplyTo = null) }
+                                }
                             )
                         }
                     }
                 }
             }
-            Spacer(modifier = Modifier.height(10.dp))
-            if (isWideScreen) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    channels.forEach { ch ->
-                        val active = ch.id == channelId
-                        ChannelSelectCard(
-                            channel = ch,
-                            active = active,
-                            onClick = {
-                                viewModel.updateState { it.copy(chatChannel = ch.id, chatReplyTo = null) }
-                            }
-                        )
-                    }
-                }
-            } else {
+        } else {
+            Surface(
+                color = Emerald950,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
                 ) {
                     channels.forEach { ch ->
                         val active = ch.id == channelId
                         Surface(
-                            color = if (active) Emerald900 else Slate50,
-                            border = BorderStroke(1.dp, if (active) Emerald900 else Slate200),
-                            shape = RoundedCornerShape(16.dp),
+                            color = if (active) Amber400 else Color.White.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, if (active) Amber300 else Color.White.copy(alpha = 0.2f)),
+                            shape = RoundedCornerShape(999.dp),
                             modifier = Modifier
-                                .widthIn(min = 160.dp, max = 230.dp)
+                                .defaultMinSize(minHeight = 36.dp)
                                 .clickable {
                                     viewModel.updateState { it.copy(chatChannel = ch.id, chatReplyTo = null) }
                                 }
                         ) {
-                            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
                                 Text(
                                     text = ch.name,
-                                    fontSize = 12.sp,
+                                    fontSize = 11.sp,
                                     fontWeight = FontWeight.ExtraBold,
-                                    color = if (active) Amber300 else Slate900,
+                                    color = if (active) Emerald950 else Color.White,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                            }
+                        }
+                    }
+                    if (canAddChannel) {
+                        Surface(
+                            color = Emerald700,
+                            shape = RoundedCornerShape(999.dp),
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 36.dp)
+                                .clickable { showAddChannelModal = true }
+                                .testTag("add_chat_channel_button")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = "Tambah Grup",
+                                    tint = Amber300,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
                                 Text(
-                                    text = ch.desc,
-                                    fontSize = 10.sp,
-                                    color = if (active) Emerald100 else Slate500,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    text = "Grup",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Amber300
                                 )
                             }
                         }
@@ -176,7 +214,7 @@ fun ChatScreen(
         }
     }
 
-    val chatBoxPanel: @Composable () -> Unit = {
+    val chatBoxPanel: @Composable (Modifier) -> Unit = { panelModifier ->
         val listState = rememberLazyListState()
         LaunchedEffect(messages.size, channelId) {
             if (messages.isNotEmpty()) {
@@ -186,12 +224,8 @@ fun ChatScreen(
 
         Surface(
             color = ChatWallpaper,
-            shape = RoundedCornerShape(24.dp),
-            border = BorderStroke(1.dp, Slate300),
-            shadowElevation = 2.dp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(if (isWideScreen) 640.dp else 580.dp)
+            shape = RoundedCornerShape(0.dp),
+            modifier = panelModifier
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 // Header Chat Emerald950
@@ -522,14 +556,14 @@ fun ChatScreen(
     }
 
     if (isWideScreen) {
-        Row(horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.fillMaxWidth()) {
-            Box(modifier = Modifier.weight(0.34f)) { channelPanel() }
-            Box(modifier = Modifier.weight(0.66f)) { chatBoxPanel() }
+        Row(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.width(290.dp).fillMaxHeight()) { channelPanel() }
+            chatBoxPanel(Modifier.weight(1f).fillMaxHeight())
         }
     } else {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(modifier = Modifier.fillMaxSize()) {
             channelPanel()
-            chatBoxPanel()
+            chatBoxPanel(Modifier.weight(1f).fillMaxWidth())
         }
     }
 

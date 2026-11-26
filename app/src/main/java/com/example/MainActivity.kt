@@ -9,7 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.util.Base64
-import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -19,23 +19,41 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.credentials.CredentialManager
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.example.data.BiometricCapability
 import com.example.data.ChatAttachmentDraft
 import com.example.data.FirestoreNotificationRepository
 import com.example.ui.MmqaAppShell
@@ -45,6 +63,7 @@ import com.example.ui.auth.attemptAutoSignIn
 import com.example.ui.auth.authStateFlow
 import com.example.ui.auth.signOutGoogleAndFirebase
 import com.example.ui.components.EditProfileDialog
+import com.example.ui.components.LiquidGlassSidebarContainer
 import com.example.ui.components.NotificationInboxDialog
 import com.example.ui.notifications.FirestoreNotificationViewModel
 import com.example.ui.notifications.MmqaLocalNotifier
@@ -61,14 +80,14 @@ import java.io.ByteArrayOutputStream
 import java.io.OutputStreamWriter
 import kotlin.math.max
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             MmqaAr2Theme {
                 val vm: MmqaViewModel = viewModel()
-                MmqaRootApp(viewModel = vm)
+                MmqaRootApp(activity = this, viewModel = vm)
             }
         }
     }
@@ -120,7 +139,7 @@ private fun compressImageUriToBase64(context: Context, uri: Uri, maxDim: Int, qu
 }
 
 @Composable
-private fun MmqaRootApp(viewModel: MmqaViewModel) {
+private fun MmqaRootApp(activity: FragmentActivity, viewModel: MmqaViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
@@ -132,6 +151,11 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
     val supabaseStatus by viewModel.supabaseStatus.collectAsStateWithLifecycle()
+    val isOnline by viewModel.isOnlineFlow.collectAsStateWithLifecycle()
+    val pendingMutationCount by viewModel.pendingMutationCount.collectAsStateWithLifecycle()
+    val securitySettings by viewModel.securitySettings.collectAsStateWithLifecycle()
+    val isAppLocked by viewModel.isAppLocked.collectAsStateWithLifecycle()
+    val biometricCapability = remember { viewModel.getBiometricCapability() }
 
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var draftAvatarBase64 by remember { mutableStateOf("") }
@@ -357,6 +381,46 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
         }
     }
 
+    val saveBase64Attachment: (String, String, String) -> Unit = { fileName, _, dataUrl ->
+        val pureB64 = dataUrl.substringAfter("base64,", dataUrl).trim()
+        runCatching { Base64.decode(pureB64, Base64.DEFAULT) }
+            .onSuccess { bytes ->
+                pendingSaveBytes = bytes
+                saveAttachmentLauncher.launch(fileName.ifBlank { "dokumen_mmqa.pdf" })
+            }
+            .onFailure {
+                viewModel.showToast("Dokumen tidak valid untuk diunduh.", isError = true)
+            }
+    }
+
+    val triggerBiometricQuickLogin: () -> Unit = {
+        viewModel.getSecurityManager().authenticate(
+            activity = activity,
+            title = "Login Cepat Biometrik MMQA AR2",
+            subtitle = "Verifikasi untuk masuk ke akun @${securitySettings.savedUsername}",
+            onSuccess = {
+                viewModel.loginWithBiometricSavedUser()
+            },
+            onError = { err ->
+                viewModel.showToast(err, isError = true)
+            }
+        )
+    }
+
+    val triggerBiometricUnlock: () -> Unit = {
+        viewModel.getSecurityManager().authenticate(
+            activity = activity,
+            title = "Buka Kunci MMQA AR2",
+            subtitle = "Data lokal terenkripsi AES-256 — verifikasi biometrik Anda",
+            onSuccess = {
+                viewModel.unlockAppWithBiometric()
+            },
+            onError = { err ->
+                viewModel.showToast(err, isError = true)
+            }
+        )
+    }
+
     val handleGoogleSignOut: () -> Unit = {
         showNotifDialog = false
         showEditProfileDialog = false
@@ -367,6 +431,15 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
                 viewModel.logout()
             }
         )
+    }
+
+    val showLockOverlay = isAppLocked && securitySettings.biometricLockEnabled
+
+    LaunchedEffect(showLockOverlay) {
+        if (showLockOverlay) {
+            delay(250L)
+            triggerBiometricUnlock()
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -387,7 +460,11 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
                         viewModel.showToast(err, isError = true)
                     },
                     onGoogleSignOut = handleGoogleSignOut,
-                    onLogin = { u, p -> viewModel.login(u, p) }
+                    onLogin = { u, p -> viewModel.login(u, p) },
+                    biometricQuickLoginAvailable = false,
+                    savedBiometricUsername = securitySettings.savedUsername,
+                    onBiometricQuickLogin = triggerBiometricQuickLogin,
+                    onSavePublicPdf = saveBase64Attachment
                 )
             }
         } else {
@@ -433,6 +510,19 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
                     }
                 }
 
+                // Real-time HP notifications for offline-to-online auto-sync & database updates
+                LaunchedEffect(activeFirebaseUser.uid, viewModel) {
+                    viewModel.realtimeAlerts.collect { alert ->
+                        MmqaLocalNotifier.showNotification(context, alert.title, alert.body)
+                        notifVm.pushNotification(
+                            title = alert.title,
+                            body = alert.body,
+                            category = alert.category,
+                            channelId = ""
+                        )
+                    }
+                }
+
                 // Sync user's cloud profile whenever logged in or display name changes
                 LaunchedEffect(activeFirebaseUser.uid, uiState.currentUser?.id, uiState.currentUser?.name) {
                     val mmqaUser = uiState.currentUser
@@ -448,6 +538,9 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
                 }
 
                 if (uiState.currentUser == null) {
+                    val bioQuickReady = securitySettings.biometricQuickLoginEnabled &&
+                        securitySettings.savedUsername.isNotBlank() &&
+                        biometricCapability == BiometricCapability.AVAILABLE
                     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                         val isWide = maxWidth >= 840.dp
                         LoginScreen(
@@ -459,7 +552,11 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
                             onGoogleSignInSuccess = { viewModel.showToast("Akun Google aktif!") },
                             onGoogleSignInError = { err -> viewModel.showToast(err, isError = true) },
                             onGoogleSignOut = handleGoogleSignOut,
-                            onLogin = { u, p -> viewModel.login(u, p) }
+                            onLogin = { u, p -> viewModel.login(u, p) },
+                            biometricQuickLoginAvailable = bioQuickReady,
+                            savedBiometricUsername = securitySettings.savedUsername,
+                            onBiometricQuickLogin = triggerBiometricQuickLogin,
+                            onSavePublicPdf = saveBase64Attachment
                         )
                     }
                 } else {
@@ -467,6 +564,9 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
                         db = db,
                         uiState = uiState,
                         syncState = syncState,
+                        isOnline = isOnline,
+                        pendingMutationCount = pendingMutationCount,
+                        biometricLockEnabled = securitySettings.biometricLockEnabled,
                         viewModel = viewModel,
                         firebaseUser = activeFirebaseUser,
                         unreadNotificationCount = unreadCount,
@@ -475,6 +575,7 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
                             draftAvatarBase64 = uiState.currentUser?.avatarBase64 ?: ""
                             showEditProfileDialog = true
                         },
+                        onLockApp = { viewModel.lockAppNow() },
                         onGoogleSignOut = handleGoogleSignOut,
                         onExportCsv = { filename, csvContent ->
                             pendingCsvContent = csvContent
@@ -507,21 +608,11 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
                         },
-                        onSaveChatAttachment = { fileName, _, dataUrl ->
-                            val pureB64 = dataUrl.substringAfter("base64,", dataUrl).trim()
-                            runCatching { Base64.decode(pureB64, Base64.DEFAULT) }
-                                .onSuccess { bytes ->
-                                    pendingSaveBytes = bytes
-                                    saveAttachmentLauncher.launch(fileName.ifBlank { "lampiran_mmqa" })
-                                }
-                                .onFailure {
-                                    viewModel.showToast("Lampiran tidak valid untuk diunduh.", isError = true)
-                                }
-                        }
+                        onSaveChatAttachment = saveBase64Attachment
                     )
                 }
 
-                if (showNotifDialog) {
+                if (showNotifDialog && !showLockOverlay) {
                     NotificationInboxDialog(
                         notificationsState = notificationsState,
                         hasNotificationPermission = hasNotificationPermission,
@@ -536,6 +627,14 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
                     )
                 }
             }
+        }
+
+        // Biometric App Lock Shield Overlay
+        if (showLockOverlay) {
+            BackHandler(enabled = true) { /* Prevent bypassing biometric lock */ }
+            BiometricLockOverlay(
+                onUnlockClick = triggerBiometricUnlock
+            )
         }
 
         // Floating Toast Banner
@@ -567,7 +666,7 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
         }
 
         val loggedInUser = uiState.currentUser
-        if (showEditProfileDialog && loggedInUser != null) {
+        if (showEditProfileDialog && loggedInUser != null && !showLockOverlay) {
             EditProfileDialog(
                 user = loggedInUser,
                 ruleSummary = viewModel.getPasswordRuleSummary(),
@@ -584,8 +683,147 @@ private fun MmqaRootApp(viewModel: MmqaViewModel) {
                 onChangePassword = { oldPwd, newPwd, confirmPwd ->
                     viewModel.changeOwnPassword(oldPwd, newPwd, confirmPwd)
                 },
-                onDismiss = { showEditProfileDialog = false }
+                onDismiss = { showEditProfileDialog = false },
+                securitySettings = securitySettings,
+                biometricCapability = biometricCapability,
+                onToggleBiometricLock = { enabled ->
+                    viewModel.setBiometricLockEnabled(enabled)
+                },
+                onToggleBiometricQuickLogin = { enabled ->
+                    viewModel.setBiometricQuickLoginEnabled(enabled)
+                },
+                onLockNow = {
+                    showEditProfileDialog = false
+                    viewModel.lockAppNow()
+                }
             )
+        }
+    }
+}
+
+@Composable
+private fun BiometricLockOverlay(
+    onUnlockClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xFF011B13), Emerald950, Color(0xFF022B1E))
+                )
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        LiquidGlassSidebarContainer(
+            modifier = Modifier
+                .padding(24.dp)
+                .widthIn(max = 380.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(28.dp))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.White,
+                    border = BorderStroke(2.dp, Amber400),
+                    shadowElevation = 6.dp
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.mmqa_logo),
+                        contentDescription = "Logo MMQA Al Rifa'i 02",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(72.dp)
+                            .padding(4.dp)
+                            .clip(CircleShape)
+                    )
+                }
+
+                Surface(
+                    color = Emerald700.copy(alpha = 0.28f),
+                    shape = RoundedCornerShape(999.dp),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.VerifiedUser,
+                            contentDescription = "Enkripsi AES-256",
+                            tint = Amber400,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            "AES-256-GCM • Kunci Biometrik Aktif",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Lock,
+                        contentDescription = "Aplikasi Terkunci",
+                        tint = Amber400,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        "MMQA AR2 Terkunci",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+
+                Text(
+                    "Seluruh database lokal dan antrean sinkronisasi dilindungi enkripsi Android Keystore. Verifikasi sidik jari, wajah, atau kunci layar untuk melanjutkan.",
+                    color = Emerald100.copy(alpha = 0.85f),
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Button(
+                    onClick = onUnlockClick,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Amber500,
+                        contentColor = Emerald950
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 50.dp)
+                        .testTag("biometric_unlock_button")
+                ) {
+                    Icon(
+                        Icons.Filled.Fingerprint,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        "Buka Kunci dengan Biometrik",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
         }
     }
 }

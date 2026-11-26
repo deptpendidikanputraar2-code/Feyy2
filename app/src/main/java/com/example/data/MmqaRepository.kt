@@ -2,7 +2,9 @@ package com.example.data
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,11 +30,18 @@ sealed interface SyncBannerState {
     data class Error(val message: String) : SyncBannerState
 }
 
+data class RealtimeAlertItem(
+    val title: String,
+    val body: String,
+    val category: String
+)
+
 class MmqaRepository(private val context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val syncClient by lazy { GoogleSheetsSyncClient() }
     private val supabaseClient by lazy { SupabaseSyncClient() }
+    val securityManager: MmqaSecurityManager by lazy { MmqaSecurityManager(context) }
     private val syncMutex = Mutex()
     private val dbFile = File(context.filesDir, "mmqa_db_v3.json")
     private val mutationsFile = File(context.filesDir, "mmqa_mutations_v3.json")
@@ -43,8 +52,17 @@ class MmqaRepository(private val context: Context) {
     private val _syncState = MutableStateFlow<SyncBannerState>(SyncBannerState.Idle)
     val syncState: StateFlow<SyncBannerState> = _syncState.asStateFlow()
 
+    private val _isOnlineFlow = MutableStateFlow(true)
+    val isOnlineFlow: StateFlow<Boolean> = _isOnlineFlow.asStateFlow()
+
+    private val _pendingMutationCount = MutableStateFlow(0)
+    val pendingMutationCount: StateFlow<Int> = _pendingMutationCount.asStateFlow()
+
     private val _incomingChatAlerts = MutableSharedFlow<List<ChatMessageItem>>(extraBufferCapacity = 8)
     val incomingChatAlerts: SharedFlow<List<ChatMessageItem>> = _incomingChatAlerts.asSharedFlow()
+
+    private val _realtimeAlerts = MutableSharedFlow<RealtimeAlertItem>(extraBufferCapacity = 12)
+    val realtimeAlerts: SharedFlow<RealtimeAlertItem> = _realtimeAlerts.asSharedFlow()
 
     private var pendingMutations: MutableList<PendingMutation> = mutableListOf()
     @Volatile
@@ -53,12 +71,61 @@ class MmqaRepository(private val context: Context) {
     private var hasMutatedBeforeLoad = false
     private var lastKnownSupabaseRevision: String? = null
     private var debounceSyncJob: Job? = null
+    private var reconnectSyncJob: Job? = null
     private var sheetsMirrorJob: Job? = null
     private var activeActorName: String = "MMQA AR2 APK"
+    private var networkCallbackRegistered = false
 
     init {
+        _isOnlineFlow.value = isNetworkAvailable()
+        if (!_isOnlineFlow.value) {
+            _syncState.value = SyncBannerState.Offline
+        }
+        registerNetworkCallback()
         scope.launch {
             ensureLocalDataLoaded()
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        if (networkCallbackRegistered) return
+        runCatching {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            cm.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    val wasOffline = !_isOnlineFlow.value
+                    _isOnlineFlow.value = true
+                    if (wasOffline || pendingMutations.isNotEmpty() || _database.value.pendingSync) {
+                        reconnectSyncJob?.cancel()
+                        reconnectSyncJob = scope.launch {
+                            delay(1200L)
+                            val hadPending = pendingMutations.isNotEmpty() || _database.value.pendingSync
+                            val res = syncWithGoogleSheets(forcePushEvenIfNoMutations = false)
+                            if (hadPending && res.isSuccess) {
+                                _realtimeAlerts.tryEmit(
+                                    RealtimeAlertItem(
+                                        title = "✅ Sinkronisasi Offline Selesai",
+                                        body = "Koneksi kembali stabil. Data lokal yang tersimpan saat offline berhasil disinkronkan ke Supabase.",
+                                        category = "sync"
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    val stillConnected = isNetworkAvailable()
+                    _isOnlineFlow.value = stillConnected
+                    if (!stillConnected) {
+                        _syncState.value = SyncBannerState.Offline
+                    }
+                }
+            })
+            networkCallbackRegistered = true
         }
     }
 
@@ -69,6 +136,7 @@ class MmqaRepository(private val context: Context) {
             val loadedDb = loadLocalDatabaseFast()
             val loadedMutations = loadLocalMutations()
             pendingMutations = loadedMutations.toMutableList()
+            _pendingMutationCount.value = pendingMutations.size
             if (!hasMutatedBeforeLoad) {
                 _database.value = loadedDb
             }
@@ -90,7 +158,7 @@ class MmqaRepository(private val context: Context) {
     private fun loadLocalDatabaseFast(): MmqaDatabase {
         return try {
             if (dbFile.exists()) {
-                val raw = dbFile.readText()
+                val raw = securityManager.decrypt(dbFile.readText())
                 if (raw.isNotBlank()) MmqaJsonCodec.decodeDatabase(raw) else MmqaDefaults.createDefaultDatabase()
             } else {
                 MmqaDefaults.createDefaultDatabase()
@@ -103,7 +171,7 @@ class MmqaRepository(private val context: Context) {
     private fun loadLocalMutations(): List<PendingMutation> {
         return try {
             if (mutationsFile.exists()) {
-                val raw = mutationsFile.readText()
+                val raw = securityManager.decrypt(mutationsFile.readText())
                 if (raw.isNotBlank()) MmqaJsonCodec.decodeMutations(raw) else emptyList()
             } else emptyList()
         } catch (_: Exception) {
@@ -112,9 +180,10 @@ class MmqaRepository(private val context: Context) {
     }
 
     private suspend fun persistLocalState(db: MmqaDatabase, mutations: List<PendingMutation>) = withContext(Dispatchers.IO) {
+        _pendingMutationCount.value = mutations.size
         runCatching {
-            dbFile.writeText(MmqaJsonCodec.encodeDatabase(db))
-            mutationsFile.writeText(MmqaJsonCodec.encodeMutations(mutations))
+            dbFile.writeText(securityManager.encrypt(MmqaJsonCodec.encodeDatabase(db)))
+            mutationsFile.writeText(securityManager.encrypt(MmqaJsonCodec.encodeMutations(mutations)))
         }
     }
 
@@ -275,6 +344,27 @@ class MmqaRepository(private val context: Context) {
                     val newChats = finalDb.chatMessages.filter { it.id !in existingIds }
                     if (newChats.isNotEmpty()) _incomingChatAlerts.tryEmit(newChats)
 
+                    val existingJuknisIds = currentLocal.juknisDocs.map { it.id }.toSet()
+                    finalDb.juknisDocs.filter { it.id !in existingJuknisIds }.takeLast(2).forEach { doc ->
+                        _realtimeAlerts.tryEmit(
+                            RealtimeAlertItem(
+                                title = "📘 Juknis / Rapat Baru: ${doc.kategori}",
+                                body = doc.judul,
+                                category = "juknis"
+                            )
+                        )
+                    }
+                    val existingJadwalIds = currentLocal.jadwal.map { it.id }.toSet()
+                    finalDb.jadwal.filter { it.id !in existingJadwalIds }.takeLast(2).forEach { jdw ->
+                        _realtimeAlerts.tryEmit(
+                            RealtimeAlertItem(
+                                title = "🗓️ Jadwal Baru: ${jdw.kategori}",
+                                body = "${jdw.judul} (${jdw.hari}, ${jdw.jamMulai}-${jdw.jamSelesai} di ${jdw.tempat})",
+                                category = "jadwal"
+                            )
+                        )
+                    }
+
                     _database.value = finalDb
                     persistLocalState(finalDb, pendingMutations)
                     _syncState.value = SyncBannerState.Synced(syncTime, "Cloud")
@@ -370,6 +460,8 @@ class MmqaRepository(private val context: Context) {
                 "suratArsip" -> acc.copy(suratArsip = mergeCollection(acc.suratArsip, local.suratArsip, m) { it.id })
                 "inventaris" -> acc.copy(inventaris = mergeCollection(acc.inventaris, local.inventaris, m) { it.id })
                 "personalia" -> acc.copy(personalia = mergeCollection(acc.personalia, local.personalia, m) { it.id })
+                "juknisDocs" -> acc.copy(juknisDocs = mergeCollection(acc.juknisDocs, local.juknisDocs, m) { it.id })
+                "jadwal" -> acc.copy(jadwal = mergeCollection(acc.jadwal, local.jadwal, m) { it.id })
                 "chatChannels" -> acc.copy(chatChannels = mergeCollection(acc.chatChannels, local.chatChannels, m) { it.id })
                 "chatMessages" -> acc.copy(chatMessages = mergeCollection(acc.chatMessages, local.chatMessages, m) { it.id })
                 "adminConfig" -> acc.copy(adminConfig = local.adminConfig)

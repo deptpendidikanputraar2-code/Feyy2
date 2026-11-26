@@ -6,7 +6,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,9 +26,20 @@ import androidx.compose.ui.unit.sp
 import com.example.data.MmqaDatabase
 import com.example.ui.MmqaUiState
 import com.example.ui.MmqaViewModel
+import com.example.ui.components.BarcodeCardPreviewDialog
+import com.example.ui.components.BarcodeDirectoryDialog
+import com.example.ui.components.BarcodeScannerDialog
 import com.example.ui.components.CompactDropdownSelector
+import com.example.ui.components.MmqaBarcodeCard
+import com.example.ui.components.MmqaBarcodeEngine
+import com.example.ui.components.MmqaModalDialog
+import com.example.ui.components.MmqaReportFormatters
 import com.example.ui.components.SectionCard
+import com.example.ui.components.StatusPill
 import com.example.ui.components.SubmenuTabsRow
+import com.example.ui.components.WaPdfActionRow
+import com.example.ui.components.printHtmlDocument
+import com.example.ui.components.shareTextToWhatsApp
 import com.example.ui.theme.*
 import java.util.Calendar
 
@@ -59,6 +75,17 @@ fun AbsensiScreen(
         viewModel.canAccessAnakSub("absensi_pengurus_edit")
     }
     val canMarkAllPresent = canEditCurrentTab && (activeTab != "santri" || viewModel.canAccessAnakSub("absensi_santri_mark_all"))
+    val canScanBarcode = viewModel.canAccessAnakSub("absensi_barcode_scan") && canEditCurrentTab
+
+    var showScannerDialog by remember { mutableStateOf(false) }
+    var showBarcodeDirectory by remember { mutableStateOf(false) }
+    var previewBarcodeCard by remember { mutableStateOf<MmqaBarcodeCard?>(null) }
+    var showCustomEventModal by remember { mutableStateOf(false) }
+
+    val sessionOptions = remember(db.jadwal, db.absensi, uiState.absensiSesi) {
+        viewModel.buildAbsensiSessionOptions()
+    }
+    val isCustomOrEventSession = uiState.absensiSesi !in listOf("Pagi", "Sore", "Malam")
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SubmenuTabsRow(
@@ -116,12 +143,63 @@ fun AbsensiScreen(
                     }
 
                     CompactDropdownSelector(
-                        label = "Sesi Majelis",
-                        selectedText = "Sesi ${uiState.absensiSesi}",
-                        options = listOf("Pagi" to "Sesi Pagi", "Sore" to "Sesi Sore", "Malam" to "Sesi Malam"),
+                        label = "Sesi / Event Kehadiran",
+                        selectedText = sessionOptions.firstOrNull { it.first == uiState.absensiSesi }?.second
+                            ?: if (isCustomOrEventSession) "🎯 ${uiState.absensiSesi}" else "Sesi ${uiState.absensiSesi}",
+                        options = sessionOptions,
                         onSelect = { sesi -> viewModel.updateState { it.copy(absensiSesi = sesi) } },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1.25f)
                     )
+                }
+
+                // Event Kehadiran Khusus Banner & Quick Trigger
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isCustomOrEventSession) {
+                        Surface(
+                            color = Sky100,
+                            border = BorderStroke(1.dp, Sky700.copy(alpha = 0.35f)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.Event, contentDescription = null, tint = Sky900, modifier = Modifier.size(16.dp))
+                                Text(
+                                    text = "Mode Event Aktif: ${uiState.absensiSesi}",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Sky900,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "Bisa pilih sesi harian, event dari Jadwal, atau buat Event Kehadiran Khusus untuk scan QR.",
+                            fontSize = 10.sp,
+                            color = Slate500,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { showCustomEventModal = true },
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Emerald700.copy(alpha = 0.5f)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("absensi_add_custom_event_btn")
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Buat Event Kehadiran", tint = Emerald900, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Event Khusus", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Emerald900)
+                    }
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
@@ -168,6 +246,39 @@ fun AbsensiScreen(
                         }
                     }
                 }
+
+                // Barcode Scanner & Live Barcode Directory Action Bar
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    if (canScanBarcode) {
+                        Button(
+                            onClick = { showScannerDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Emerald900, contentColor = Amber300),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 44.dp)
+                                .testTag("absensi_scan_barcode_btn")
+                        ) {
+                            Icon(Icons.Default.QrCodeScanner, contentDescription = "Scan Barcode", modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Scan Barcode", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = { showBarcodeDirectory = true },
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, Emerald700.copy(alpha = 0.45f)),
+                        colors = ButtonDefaults.outlinedButtonColors(containerColor = Emerald50, contentColor = Emerald900),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 44.dp)
+                            .testTag("absensi_barcode_directory_btn")
+                    ) {
+                        Icon(Icons.Default.Badge, contentDescription = "Kartu Barcode", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Kartu Barcode", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -185,6 +296,51 @@ fun AbsensiScreen(
                     val rec = viewModel.getAbsensiRecord("dewan_harian", d.id)
                     AbsensiRowUi("dewan_harian", d.id, "", d.nama, "Kode: ${d.kode} • ${d.jabatan}", rec?.status ?: "", rec?.catatan ?: "")
                 }
+            }
+
+            if (rows.isNotEmpty()) {
+                val sesiDisplay = if (isCustomOrEventSession) uiState.absensiSesi else "Sesi ${uiState.absensiSesi}"
+                val kategoriDisplay = when (activeTab) {
+                    "santri" -> "Santri (${viewModel.getFirqohFilterDisplayLabel(uiState.absensiFirqoh)})"
+                    "muallim" -> "Mu'allim Firqoh"
+                    else -> "Dewan Harian MMQA"
+                }
+                val hadirCnt = rows.count { it.status == "Hadir" }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Rekap $sesiDisplay", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Slate700)
+                        StatusPill("Hadir: $hadirCnt / ${rows.size}", Emerald100, Emerald900)
+                    }
+                    WaPdfActionRow(
+                        onShareWa = {
+                            val waText = MmqaReportFormatters.buildSessionAbsensiWa(
+                                tanggal = uiState.absensiTanggal,
+                                sesiLabel = sesiDisplay,
+                                kategoriLabel = kategoriDisplay,
+                                rows = rows.map { Triple(it.nama, it.subInfo, it.status) }
+                            )
+                            shareTextToWhatsApp(context, waText, "Bagikan Rekap $sesiDisplay")
+                        },
+                        onDownloadPdf = {
+                            val html = MmqaReportFormatters.buildSessionAbsensiPdfHtml(
+                                tanggal = uiState.absensiTanggal,
+                                sesiLabel = sesiDisplay,
+                                kategoriLabel = kategoriDisplay,
+                                rows = rows.map { Triple(it.nama, it.subInfo, it.status) }
+                            )
+                            printHtmlDocument(context, "Absensi_${uiState.absensiTanggal}_${uiState.absensiSesi.take(20)}", html)
+                        },
+                        waLabel = "Rekap WA",
+                        pdfLabel = "Rekap PDF",
+                        waTestTag = "absensi_session_wa_btn",
+                        pdfTestTag = "absensi_session_pdf_btn"
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
             }
 
             if (rows.isEmpty()) {
@@ -206,9 +362,131 @@ fun AbsensiScreen(
                             },
                             onCatatanCommit = { catatan ->
                                 viewModel.setAbsensiCatatan(row.tipe, row.targetId, row.firqohId, catatan)
+                            },
+                            onShowBarcode = {
+                                val card = when (row.tipe) {
+                                    "santri" -> db.santri.firstOrNull { it.id == row.targetId }
+                                        ?.let { MmqaBarcodeEngine.buildCardForSantri(db, it) }
+                                    "muallim" -> db.muallim.firstOrNull { it.id == row.targetId }
+                                        ?.let { MmqaBarcodeEngine.buildCardForMuallim(db, it) }
+                                    else -> db.dewanHarian.firstOrNull { it.id == row.targetId }
+                                        ?.let { MmqaBarcodeEngine.buildCardForDewan(db, it) }
+                                }
+                                if (card != null) previewBarcodeCard = card
                             }
                         )
                     }
+                }
+            }
+        }
+    }
+
+    if (showScannerDialog) {
+        BarcodeScannerDialog(
+            db = db,
+            activeTanggal = uiState.absensiTanggal,
+            activeSesi = uiState.absensiSesi,
+            onScannedAttendance = { card, status ->
+                viewModel.recordBarcodeAttendance(
+                    tipe = card.tipe,
+                    targetId = card.targetId,
+                    firqohId = card.firqohId,
+                    nama = card.nama,
+                    status = status
+                )
+            },
+            onDismiss = { showScannerDialog = false }
+        )
+    }
+
+    if (showBarcodeDirectory) {
+        BarcodeDirectoryDialog(
+            db = db,
+            viewModel = viewModel,
+            initialTab = activeTab,
+            initialFirqohFilter = uiState.absensiFirqoh,
+            onDismiss = { showBarcodeDirectory = false }
+        )
+    }
+
+    previewBarcodeCard?.let { card ->
+        BarcodeCardPreviewDialog(
+            card = card,
+            onDismiss = { previewBarcodeCard = null }
+        )
+    }
+
+    if (showCustomEventModal) {
+        var eventName by remember { mutableStateOf("") }
+        MmqaModalDialog(title = "🎯 Buat Event Kehadiran Khusus (QR)", onDismiss = { showCustomEventModal = false }) {
+            Text(
+                text = "Buat nama event kehadiran tertentu (misal: Istighotsah Kubro, Rapat Wali Santri, Ujian Munaqosyah, Wisuda Tahfidz). Setelah aktif, seluruh scan QR dan presensi manual akan dicatat khusus untuk event ini.",
+                fontSize = 11.sp,
+                color = Slate700
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            OutlinedTextField(
+                value = eventName,
+                onValueChange = { eventName = it },
+                label = { Text("Nama Event Kehadiran") },
+                placeholder = { Text("Contoh: Istighotsah Kubro / Rapat Wali Santri") },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("absensi_custom_event_input")
+            )
+            if (db.jadwal.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text("Atau pilih langsung dari Menu Jadwal:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate700)
+                Spacer(modifier = Modifier.height(6.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    db.jadwal.take(6).forEach { j ->
+                        Surface(
+                            color = Slate50,
+                            border = BorderStroke(1.dp, Slate200),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    viewModel.updateState {
+                                        it.copy(
+                                            absensiSesi = "Event: ${j.judul}",
+                                            absensiTanggal = j.tanggal.ifBlank { it.absensiTanggal }
+                                        )
+                                    }
+                                    showCustomEventModal = false
+                                    viewModel.showToast("🎯 Event aktif: ${j.judul}. Siap scan QR!")
+                                }
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text("[${j.kategori}] ${j.judul}", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = Emerald900)
+                                Text("${j.hari}, ${j.tanggal} • ${j.jamMulai}-${j.jamSelesai} • ${j.tempat}", fontSize = 10.sp, color = Slate500)
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                TextButton(onClick = { showCustomEventModal = false }) { Text("Batal") }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        val clean = eventName.trim()
+                        if (clean.isNotBlank()) {
+                            val finalSesi = if (clean.startsWith("Event:", ignoreCase = true)) clean else "Event: $clean"
+                            viewModel.updateState { it.copy(absensiSesi = finalSesi) }
+                            showCustomEventModal = false
+                            viewModel.showToast("🎯 Mode presensi QR aktif untuk $finalSesi")
+                        }
+                    },
+                    enabled = eventName.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Emerald900, contentColor = Amber300),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.testTag("absensi_save_custom_event_btn")
+                ) {
+                    Text("Aktifkan Event & Scan QR", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
                 }
             }
         }
@@ -231,7 +509,8 @@ private fun AbsensiItemCard(
     canEdit: Boolean,
     isWideScreen: Boolean,
     onStatusSelect: (String) -> Unit,
-    onCatatanCommit: (String) -> Unit
+    onCatatanCommit: (String) -> Unit,
+    onShowBarcode: () -> Unit
 ) {
     var noteDraft by remember(row.targetId, row.catatan, row.status) { mutableStateOf(row.catatan) }
     val statusSpecs = listOf(
@@ -248,15 +527,39 @@ private fun AbsensiItemCard(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Column {
-                Text(text = row.nama, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = Slate900)
-                Text(
-                    text = row.subInfo,
-                    fontSize = 11.sp,
-                    color = Slate500,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = row.nama, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = Slate900)
+                    Text(
+                        text = row.subInfo,
+                        fontSize = 11.sp,
+                        color = Slate500,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Surface(
+                    color = Emerald50,
+                    border = BorderStroke(1.dp, Emerald100),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clickable(onClick = onShowBarcode)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.QrCode2,
+                            contentDescription = "Kartu Barcode ${row.nama}",
+                            tint = Emerald900,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
             }
 
             if (isWideScreen) {

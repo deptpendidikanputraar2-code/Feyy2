@@ -431,4 +431,204 @@ object MmqaReportFormatters {
             rows = rows
         )
     }
+
+    // =========================================================================
+    // 5. REKAP SANTRI BERMASALAH (SINKRON JUKNIS)
+    // =========================================================================
+    fun buildProblematicSantriWa(
+        filterLabel: String,
+        ruleDoc: JuknisDocumentItem,
+        items: List<SantriViolationResult>
+    ): String = buildString {
+        appendLine("⚠️ *REKAP SANTRI PERLU PEMBINAAN (SINKRON JUKNIS)*")
+        appendLine("Filter: *$filterLabel* • Jumlah: *${items.size} Santri*")
+        appendLine("Acuan: _${ruleDoc.judul} (${ruleDoc.nomorDokumen})_")
+        appendLine("Batas: Alpha ≥${ruleDoc.batasAlphaSp1}/${ruleDoc.batasAlphaSp2}/${ruleDoc.batasAlphaSp3}x | Izin ≥${ruleDoc.batasIzinPeringatan}x")
+        appendLine()
+        if (items.isEmpty()) {
+            appendLine("✅ Alhamdulillah, tidak ada santri yang melewati batas pelanggaran pada filter ini.")
+        } else {
+            items.forEachIndexed { idx, r ->
+                appendLine("${idx + 1}. *${r.santri.nama}* (NIS ${r.santri.nis})")
+                appendLine("   Firqoh: ${r.firqohName}")
+                appendLine("   Status: *${r.levelLabel}* (Alpha: ${r.alphaCount}x | Izin: ${r.izinCount}x | S: ${r.sakitCount}x)")
+                appendLine("   Konsekuensi: _${r.consequences.joinToString("; ")}_")
+            }
+        }
+    }.trim()
+
+    fun buildProblematicSantriPdfHtml(
+        filterLabel: String,
+        ruleDoc: JuknisDocumentItem,
+        items: List<SantriViolationResult>
+    ): String {
+        val rows = items.mapIndexed { idx, r ->
+            listOf(
+                "${idx + 1}",
+                r.santri.nis,
+                r.santri.nama,
+                r.firqohName,
+                "${r.alphaCount}",
+                "${r.izinCount}",
+                r.levelLabel,
+                r.consequences.joinToString(" | ")
+            )
+        }
+        return wrapReportHtml(
+            title = "Rekap Santri Bermasalah & Tindak Lanjut Pembinaan",
+            subtitle = "Acuan Juknis: ${ruleDoc.judul} (${ruleDoc.nomorDokumen})",
+            metaLine = "Filter: $filterLabel • Total Terpantau: ${items.size} Santri",
+            summaryBanner = "Batas Aktif Juknis — Alpha SP1 ≥ ${ruleDoc.batasAlphaSp1}x | SP2 ≥ ${ruleDoc.batasAlphaSp2}x | Berat ≥ ${ruleDoc.batasAlphaSp3}x | Izin ≥ ${ruleDoc.batasIzinPeringatan}x",
+            tableHeaders = listOf("No", "NIS", "Nama Santri", "Firqoh", "Alpha", "Izin", "Kategori", "Konsekuensi (Sesuai Juknis)"),
+            rows = rows
+        )
+    }
+
+    // =========================================================================
+    // 6. REKAP KEUANGAN DASHBOARD
+    // =========================================================================
+    fun buildDashboardKeuanganWa(db: MmqaDatabase): String = buildString {
+        val masuk = db.keuangan.filter { it.jenis == "pemasukan" }.sumOf { it.nominal }
+        val keluar = db.keuangan.filter { it.jenis == "pengeluaran" }.sumOf { it.nominal }
+        val lunas = db.santri.count { it.statusSyahriah == "Lunas" }
+        appendLine("💰 *REKAP KEUANGAN MAJELIS MMQA AR2*")
+        appendLine("_Tanggal: ${MmqaConstants.todayStr()}_")
+        appendLine()
+        appendLine("• Total Pemasukan : *${MmqaConstants.formatRupiah(masuk)}*")
+        appendLine("• Total Pengeluaran : *${MmqaConstants.formatRupiah(keluar)}*")
+        appendLine("• Saldo Kas Akhir : *${MmqaConstants.formatRupiah(masuk - keluar)}*")
+        appendLine("• Syahriah Lunas : *$lunas / ${db.santri.size} Santri*")
+    }.trim()
+
+    fun buildDashboardKeuanganPdfHtml(db: MmqaDatabase): String {
+        val masuk = db.keuangan.filter { it.jenis == "pemasukan" }.sumOf { it.nominal }
+        val keluar = db.keuangan.filter { it.jenis == "pengeluaran" }.sumOf { it.nominal }
+        val rows = db.keuangan.mapIndexed { idx, k ->
+            listOf(
+                "${idx + 1}",
+                k.tanggal,
+                if (k.jenis == "pemasukan") "Pemasukan" else "Pengeluaran",
+                k.kategori,
+                MmqaConstants.formatRupiah(k.nominal),
+                k.keterangan,
+                k.pencatat
+            )
+        }
+        return wrapReportHtml(
+            title = "Rekapan Keuangan & Kas Majelis",
+            subtitle = "Ringkasan Pemasukan, Pengeluaran & Saldo Kas",
+            metaLine = "Total Transaksi: ${db.keuangan.size}",
+            summaryBanner = "Pemasukan: ${MmqaConstants.formatRupiah(masuk)} | Pengeluaran: ${MmqaConstants.formatRupiah(keluar)} | Saldo Akhir: ${MmqaConstants.formatRupiah(masuk - keluar)}",
+            tableHeaders = listOf("No", "Tanggal", "Jenis", "Kategori", "Nominal", "Keterangan", "Pencatat"),
+            rows = rows
+        )
+    }
+
+    // =========================================================================
+    // 7. JADWAL KEGIATAN MMQA
+    // =========================================================================
+    fun buildJadwalWa(
+        db: MmqaDatabase,
+        kategoriLabel: String,
+        items: List<JadwalItem>
+    ): String = buildString {
+        appendLine("🗓️ *JADWAL KEGIATAN MMQA AL RIFAI 02*")
+        appendLine("Kategori: *$kategoriLabel* (${items.size} Agenda)")
+        appendLine("_Diperbarui: ${MmqaConstants.todayStr()}_")
+        appendLine()
+        items.forEachIndexed { idx, j ->
+            val tglInfo = if (j.tanggal.isNotBlank()) "${j.hari}, ${j.tanggal}" else j.hari
+            val firqohLbl = if (j.firqohId == "ALL" || j.firqohId.isBlank()) {
+                "Semua Firqoh"
+            } else {
+                FirqohFilterHelper.getDisplayLabel(j.firqohId, db.firqoh)
+            }
+            appendLine("${idx + 1}. *[${j.kategori}] ${j.judul}*")
+            appendLine("   📅 $tglInfo • ⏰ ${j.jamMulai} - ${j.jamSelesai} WIB")
+            appendLine("   📍 ${j.tempat} • Firqoh: $firqohLbl")
+            appendLine("   👤 PJ: ${j.penanggungJawab}")
+            if (j.keterangan.isNotBlank()) appendLine("   📝 ${j.keterangan}")
+        }
+    }.trim()
+
+    fun buildJadwalPdfHtml(
+        db: MmqaDatabase,
+        kategoriLabel: String,
+        items: List<JadwalItem>
+    ): String {
+        val rows = items.mapIndexed { idx, j ->
+            val tglInfo = if (j.tanggal.isNotBlank()) "${j.hari}, ${j.tanggal}" else j.hari
+            val firqohLbl = if (j.firqohId == "ALL" || j.firqohId.isBlank()) {
+                "Semua Firqoh"
+            } else {
+                FirqohFilterHelper.getDisplayLabel(j.firqohId, db.firqoh)
+            }
+            listOf(
+                "${idx + 1}",
+                j.kategori,
+                j.judul,
+                tglInfo,
+                "${j.jamMulai} - ${j.jamSelesai}",
+                j.tempat,
+                firqohLbl,
+                j.penanggungJawab,
+                j.keterangan.ifBlank { "-" }
+            )
+        }
+        return wrapReportHtml(
+            title = "Jadwal Resmi Kegiatan MMQA Al Rifai 02",
+            subtitle = "Agenda Harian, Ujian, Absensi & Event Khusus Majelis",
+            metaLine = "Kategori: $kategoriLabel • Jumlah Agenda: ${items.size}",
+            tableHeaders = listOf("No", "Kategori", "Agenda / Kegiatan", "Hari / Tanggal", "Jam", "Tempat", "Firqoh", "PJ", "Keterangan"),
+            rows = rows
+        )
+    }
+
+    // =========================================================================
+    // 8. REKAP ABSENSI PER SESI / EVENT KEHADIRAN TERTENTU
+    // =========================================================================
+    fun buildSessionAbsensiWa(
+        tanggal: String,
+        sesiLabel: String,
+        kategoriLabel: String,
+        rows: List<Triple<String, String, String>> // (nama, info, status)
+    ): String = buildString {
+        val hadir = rows.count { it.third == "Hadir" }
+        val izin = rows.count { it.third == "Izin" }
+        val sakit = rows.count { it.third == "Sakit" }
+        val alpha = rows.count { it.third == "Alpha" }
+        val belum = rows.count { it.third.isBlank() }
+        appendLine("📋 *REKAP KEHADIRAN — $sesiLabel*")
+        appendLine("📅 Tanggal: *$tanggal* • Kategori: *$kategoriLabel*")
+        appendLine("✅ Hadir: *$hadir* | 🟡 Izin: *$izin* | 🔵 Sakit: *$sakit* | 🔴 Alpha: *$alpha* | ⚪ Belum: *$belum*")
+        appendLine()
+        rows.forEachIndexed { idx, (nama, info, status) ->
+            val st = status.ifBlank { "Belum Absen" }
+            appendLine("${idx + 1}. *$nama* — *$st* ($info)")
+        }
+    }.trim()
+
+    fun buildSessionAbsensiPdfHtml(
+        tanggal: String,
+        sesiLabel: String,
+        kategoriLabel: String,
+        rows: List<Triple<String, String, String>>
+    ): String {
+        val hadir = rows.count { it.third == "Hadir" }
+        val izin = rows.count { it.third == "Izin" }
+        val sakit = rows.count { it.third == "Sakit" }
+        val alpha = rows.count { it.third == "Alpha" }
+        val belum = rows.count { it.third.isBlank() }
+        val tableRows = rows.mapIndexed { idx, (nama, info, status) ->
+            listOf("${idx + 1}", nama, info, status.ifBlank { "Belum Absen" })
+        }
+        return wrapReportHtml(
+            title = "Rekap Presensi — $sesiLabel",
+            subtitle = "Daftar Kehadiran $kategoriLabel MMQA Al Rifai 02",
+            metaLine = "Tanggal: $tanggal • Total Peserta: ${rows.size}",
+            summaryBanner = "Hadir: $hadir | Izin: $izin | Sakit: $sakit | Alpha: $alpha | Belum Absen: $belum",
+            tableHeaders = listOf("No", "Nama Lengkap", "Keterangan / Firqoh", "Status Kehadiran"),
+            rows = tableRows
+        )
+    }
 }

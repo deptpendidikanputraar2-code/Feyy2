@@ -4,11 +4,13 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,6 +43,12 @@ fun DashboardScreen(
     val pemasukan = db.keuangan.filter { it.jenis == "pemasukan" }.sumOf { it.nominal }
     val pengeluaran = db.keuangan.filter { it.jenis == "pengeluaran" }.sumOf { it.nominal }
     val saldoKas = pemasukan - pengeluaran
+    val canViewKeuanganDash = viewModel.canAccessAnakSub("dashboard_keuangan_view")
+
+    val activeJuknisRule = remember(db.juknisDocs) { viewModel.getActiveJuknisAcuan() }
+    val problematicSantri = remember(db.santri, db.absensi, db.firqoh, db.juknisDocs, uiState.dashFirqohFilter) {
+        viewModel.getProblematicSantri(uiState.dashFirqohFilter)
+    }
 
     val filteredSantri = db.santri.filter { viewModel.matchesFirqohFilter(it.firqohId, uiState.dashFirqohFilter) }
     val dashFilterLabel = viewModel.getFirqohFilterDisplayLabel(uiState.dashFirqohFilter)
@@ -76,14 +84,26 @@ fun DashboardScreen(
                     iconBg = Sky100,
                     modifier = Modifier.weight(1f)
                 )
-                StatMetricCard(
-                    title = "Saldo Kas Majelis",
-                    value = MmqaConstants.formatRupiah(saldoKas),
-                    subtitle = "Masuk: ${MmqaConstants.formatRupiah(pemasukan)}",
-                    iconEmoji = "💰",
-                    highlightGradient = true,
-                    modifier = Modifier.weight(1f)
-                )
+                if (canViewKeuanganDash) {
+                    StatMetricCard(
+                        title = "Saldo Kas Majelis",
+                        value = MmqaConstants.formatRupiah(saldoKas),
+                        subtitle = "Masuk: ${MmqaConstants.formatRupiah(pemasukan)}",
+                        iconEmoji = "💰",
+                        highlightGradient = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                } else {
+                    StatMetricCard(
+                        title = "Perlu Pembinaan",
+                        value = "${problematicSantri.size} Santri",
+                        subtitle = "Batas Juknis: A≥${activeJuknisRule.batasAlphaSp1} / I≥${activeJuknisRule.batasIzinPeringatan}",
+                        iconEmoji = "⚠️",
+                        valueColor = if (problematicSantri.isNotEmpty()) Rose700 else Emerald900,
+                        iconBg = if (problematicSantri.isNotEmpty()) Rose100 else Emerald100,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -117,14 +137,222 @@ fun DashboardScreen(
                         iconBg = Sky100,
                         modifier = Modifier.weight(1f)
                     )
-                    StatMetricCard(
-                        title = "Saldo Kas Majelis",
-                        value = MmqaConstants.formatRupiah(saldoKas),
-                        subtitle = "Masuk: ${MmqaConstants.formatRupiah(pemasukan)}",
-                        iconEmoji = "💰",
-                        highlightGradient = true,
-                        modifier = Modifier.weight(1f)
+                    if (canViewKeuanganDash) {
+                        StatMetricCard(
+                            title = "Saldo Kas Majelis",
+                            value = MmqaConstants.formatRupiah(saldoKas),
+                            subtitle = "Masuk: ${MmqaConstants.formatRupiah(pemasukan)}",
+                            iconEmoji = "💰",
+                            highlightGradient = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    } else {
+                        StatMetricCard(
+                            title = "Perlu Pembinaan",
+                            value = "${problematicSantri.size} Santri",
+                            subtitle = "Acuan: A≥${activeJuknisRule.batasAlphaSp1} / I≥${activeJuknisRule.batasIzinPeringatan}",
+                            iconEmoji = "⚠️",
+                            valueColor = if (problematicSantri.isNotEmpty()) Rose700 else Emerald900,
+                            iconBg = if (problematicSantri.isNotEmpty()) Rose100 else Emerald100,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Rekap Keuangan Dashboard (Dikelola Aksesnya oleh Admin)
+        if (canViewKeuanganDash) {
+            val lunasCount = db.santri.count { it.statusSyahriah == "Lunas" }
+            SectionCard(
+                containerColor = Emerald50.copy(alpha = 0.55f),
+                borderColor = Emerald100
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "💰 Rekap Keuangan Majelis (Dashboard)",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black,
+                            color = Emerald950
+                        )
+                        Text(
+                            text = "Syahriah Lunas: $lunasCount/${db.santri.size} Santri • Keluar: ${MmqaConstants.formatRupiah(pengeluaran)}",
+                            fontSize = 11.sp,
+                            color = Emerald800
+                        )
+                    }
+                    StatusPill("Akses Admin", Emerald100, Emerald900)
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                WaPdfActionRow(
+                    onShareWa = {
+                        val msg = MmqaReportFormatters.buildDashboardKeuanganWa(db)
+                        shareTextToWhatsApp(context, msg, "Kirim Rekap Keuangan")
+                    },
+                    onDownloadPdf = {
+                        val html = MmqaReportFormatters.buildDashboardKeuanganPdfHtml(db)
+                        printHtmlDocument(context, "Rekap_Keuangan_MMQA", html)
+                    },
+                    waTestTag = "dash_keuangan_wa_btn",
+                    pdfTestTag = "dash_keuangan_pdf_btn"
+                )
+            }
+        }
+
+        // Rekap Santri Bermasalah (Alpha & Izin Sinkron Otomatis dengan Juknis Aktif)
+        SectionCard(
+            containerColor = if (problematicSantri.isNotEmpty()) Rose50.copy(alpha = 0.5f) else Color.White,
+            borderColor = if (problematicSantri.isNotEmpty()) Rose200 else Slate200
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "⚠️ Rekap Santri Bermasalah (Sinkron Juknis)",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Slate900
                     )
+                    Text(
+                        text = "Acuan: ${activeJuknisRule.judul} (${activeJuknisRule.nomorDokumen})",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Emerald800,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.width(6.dp))
+                StatusPill(
+                    text = "Lihat Juknis →",
+                    bgColor = Amber100,
+                    textColor = Amber950,
+                    borderColor = Amber300,
+                    modifier = Modifier.clickable { viewModel.selectMenu("juknis") }
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Surface(
+                color = Color.White,
+                border = BorderStroke(1.dp, Amber200),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "⚖️ Batas Aktif: Alpha SP1 ≥ ${activeJuknisRule.batasAlphaSp1}x • SP2 ≥ ${activeJuknisRule.batasAlphaSp2}x • Berat ≥ ${activeJuknisRule.batasAlphaSp3}x • Izin ≥ ${activeJuknisRule.batasIzinPeringatan}x",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Amber950,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            WaPdfActionRow(
+                onShareWa = {
+                    val msg = MmqaReportFormatters.buildProblematicSantriWa(dashFilterLabel, activeJuknisRule, problematicSantri)
+                    shareTextToWhatsApp(context, msg, "Kirim Rekap Santri Bermasalah")
+                },
+                onDownloadPdf = {
+                    val html = MmqaReportFormatters.buildProblematicSantriPdfHtml(dashFilterLabel, activeJuknisRule, problematicSantri)
+                    printHtmlDocument(context, "Rekap_Santri_Bermasalah_MMQA", html)
+                },
+                waTestTag = "dash_bermasalah_wa_btn",
+                pdfTestTag = "dash_bermasalah_pdf_btn"
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+
+            if (problematicSantri.isEmpty()) {
+                Surface(
+                    color = Emerald50,
+                    border = BorderStroke(1.dp, Emerald100),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "✅ Alhamdulillah, seluruh santri pada filter \"$dashFilterLabel\" berada dalam batas disiplin kehadiran sesuai Juknis aktif.",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Emerald900,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    problematicSantri.forEach { res ->
+                        val (lvlBg, lvlTxt, lvlBorder) = when (res.severityLevel) {
+                            3 -> Triple(Rose600, Color.White, Rose700)
+                            2 -> Triple(Rose100, Rose800, Rose200)
+                            else -> Triple(Amber100, Amber950, Amber300)
+                        }
+                        Surface(
+                            color = Color.White,
+                            border = BorderStroke(1.dp, lvlBorder),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = res.santri.nama,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Black,
+                                            color = Slate900
+                                        )
+                                        Text(
+                                            text = "NIS ${res.santri.nis} • ${res.firqohName}",
+                                            fontSize = 11.sp,
+                                            color = Slate500,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    StatusPill(res.levelLabel, lvlBg, lvlTxt)
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    StatusPill("Alpha: ${res.alphaCount}x", Rose100, Rose800)
+                                    StatusPill("Izin: ${res.izinCount}x", Amber100, Amber900)
+                                    StatusPill("Hadir: ${res.hadirCount}x", Emerald100, Emerald900)
+                                }
+                                Surface(
+                                    color = Slate50,
+                                    border = BorderStroke(1.dp, Slate200),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(
+                                            text = "Konsekuensi Sesuai Juknis Aktif:",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Rose800
+                                        )
+                                        res.consequences.forEach { cons ->
+                                            Text(
+                                                text = "• $cons",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Slate900
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -29,6 +29,8 @@ import com.example.ui.MmqaViewModel
 import com.example.ui.components.*
 import com.example.ui.theme.*
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
 private val ROLE_OPTIONS = listOf(
     "all" to "Semua Peran",
     "dewan_harian" to "Dewan Harian",
@@ -42,7 +44,10 @@ private fun roleDisplayLabel(role: String): String = when (role) {
 }
 
 private fun menuLabelOf(menuId: String): String = when (menuId) {
+    "dashboard" -> "Dashboard"
     "absensi" -> "Absensi"
+    "jadwal" -> "Jadwal"
+    "juknis" -> "Juknis PDF"
     "materi" -> "Materi"
     "ujian" -> "Ujian"
     "keuangan" -> "Keuangan"
@@ -254,7 +259,7 @@ fun AdminScreen(
             // LEVEL 3: KELOLA AKSES ANAK SUB (FITUR & AKSI GRANULAR)
             // =================================================================
             "anaksub" -> {
-                val menuKeys = listOf("ALL", "absensi", "materi", "ujian", "keuangan", "surat", "inventaris", "induk", "personalia", "chat")
+                val menuKeys = listOf("ALL", "dashboard", "absensi", "jadwal", "juknis", "materi", "ujian", "keuangan", "surat", "inventaris", "induk", "personalia", "chat")
                 val filteredAnakSub = if (anakSubMenuFilter == "ALL") {
                     cfg.anakSub
                 } else {
@@ -386,6 +391,18 @@ fun AdminScreen(
                         }
                         PermissionToggleRow("Mu'allim boleh tambah/edit Data Induk", p.muallimCanManageDataInduk) { v ->
                             viewModel.updateAdminPermissions { it.copy(muallimCanManageDataInduk = v) }
+                        }
+                        val dashKeuForMuallim = cfg.anakSub.firstOrNull { it.id == "dashboard_keuangan_view" }?.let { it.enabled && it.roles == "all" } ?: false
+                        PermissionToggleRow("Tampilkan Rekap Keuangan di Dashboard untuk Mu'allim", dashKeuForMuallim) { v ->
+                            viewModel.updateAnakSub("dashboard_keuangan_view", role = if (v) "all" else "dewan_harian")
+                        }
+                        val juknisUploadForMuallim = cfg.anakSub.firstOrNull { it.id == "juknis_upload" }?.let { it.enabled && it.roles == "all" } ?: false
+                        PermissionToggleRow("Mu'allim boleh upload/edit Juknis & Materi Rapat PDF", juknisUploadForMuallim) { v ->
+                            viewModel.updateAnakSub("juknis_upload", role = if (v) "all" else "dewan_harian")
+                        }
+                        val jadwalManageForMuallim = cfg.anakSub.firstOrNull { it.id == "jadwal_manage" }?.let { it.enabled && it.roles == "all" } ?: false
+                        PermissionToggleRow("Mu'allim boleh tambah/edit Jadwal Kegiatan", jadwalManageForMuallim) { v ->
+                            viewModel.updateAnakSub("jadwal_manage", role = if (v) "all" else "dewan_harian")
                         }
                         PermissionToggleRow("Izinkan aksi Hapus Data (Global)", p.allowDeleteRecords) { v ->
                             viewModel.updateAdminPermissions { it.copy(allowDeleteRecords = v) }
@@ -595,6 +612,51 @@ fun AdminScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("💾 Simpan Kebijakan Password Rule", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                    }
+                }
+
+                // Keamanan, Enkripsi & Biometrik Perangkat
+                val secSettings by viewModel.securitySettings.collectAsStateWithLifecycle()
+                val bioCap = remember { viewModel.getBiometricCapability() }
+                val pendingCount by viewModel.pendingMutationCount.collectAsStateWithLifecycle()
+                SectionCard(containerColor = Emerald50.copy(alpha = 0.55f), borderColor = Emerald100) {
+                    Text("🛡️ Keamanan, Enkripsi AES-256 & Biometrik", fontSize = 15.sp, fontWeight = FontWeight.Black, color = Emerald950)
+                    Text("Data lokal offline & antrean sinkronisasi dilindungi enkripsi AES-256-GCM.", fontSize = 11.sp, color = Slate700)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        StatusPill(
+                            text = if (secSettings.keystoreBacked) "Hardware Keystore AES-256" else "Enkripsi AES-256 Aktif",
+                            bgColor = Emerald100,
+                            textColor = Emerald900
+                        )
+                        StatusPill("Antrean Offline: $pendingCount", Amber100, Amber950)
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PermissionToggleRow("Kunci Aplikasi dengan Biometrik (Sidik Jari / Wajah / PIN)", secSettings.biometricLockEnabled) { v ->
+                            if (v && bioCap != BiometricCapability.AVAILABLE) {
+                                viewModel.showToast("Aktifkan sidik jari, wajah, atau kunci layar di Pengaturan HP terlebih dahulu.", isError = true)
+                            } else {
+                                viewModel.setBiometricLockEnabled(v)
+                            }
+                        }
+                        PermissionToggleRow("Aktifkan Login Cepat Biometrik di Halaman Masuk", secSettings.biometricQuickLoginEnabled) { v ->
+                            if (v && bioCap != BiometricCapability.AVAILABLE) {
+                                viewModel.showToast("Biometrik / kunci layar belum disetel pada perangkat ini.", isError = true)
+                            } else {
+                                viewModel.setBiometricQuickLoginEnabled(v)
+                            }
+                        }
+                    }
+                    if (secSettings.biometricLockEnabled) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.lockAppNow() },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("🔒 Kunci Layar Aplikasi Sekarang", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = Emerald900)
+                        }
                     }
                 }
             }

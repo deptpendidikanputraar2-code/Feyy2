@@ -48,6 +48,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.R
+import com.example.data.BiometricCapability
+import com.example.data.SecuritySettings
 import com.example.data.UserAccount
 import com.example.ui.notifications.NotificationUiState
 import com.example.ui.theme.*
@@ -467,7 +469,12 @@ fun EditProfileDialog(
     onClearAvatar: () -> Unit,
     onSaveProfile: (newName: String, newAvatarBase64: String) -> Boolean,
     onChangePassword: (oldPwd: String, newPwd: String, confirmPwd: String) -> Boolean,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    securitySettings: SecuritySettings = SecuritySettings(),
+    biometricCapability: BiometricCapability = BiometricCapability.UNAVAILABLE,
+    onToggleBiometricLock: (Boolean) -> Unit = {},
+    onToggleBiometricQuickLogin: (Boolean) -> Unit = {},
+    onLockNow: () -> Unit = {}
 ) {
     var activeTab by remember { mutableStateOf("profil") }
     var nameInput by remember(user.id) { mutableStateOf(user.name) }
@@ -477,7 +484,11 @@ fun EditProfileDialog(
 
     MmqaModalDialog(title = "👤 Profil & Keamanan Akun", onDismiss = onDismiss) {
         SubmenuTabsRow(
-            items = listOf("profil" to "Ubah Nama & Foto", "password" to "Ubah Password"),
+            items = listOf(
+                "profil" to "Profil & Foto",
+                "password" to "Password",
+                "keamanan" to "Biometrik & Enkripsi"
+            ),
             selectedId = activeTab,
             onSelect = { activeTab = it }
         )
@@ -584,7 +595,7 @@ fun EditProfileDialog(
                     Text("Simpan Profil", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
                 }
             }
-        } else {
+        } else if (activeTab == "password") {
             Surface(
                 color = Amber50,
                 border = BorderStroke(1.dp, Amber200),
@@ -642,6 +653,86 @@ fun EditProfileDialog(
                     modifier = Modifier.testTag("save_own_password_button")
                 ) {
                     Text("Simpan Password Baru", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                }
+            }
+        } else {
+            Surface(
+                color = Emerald50,
+                border = BorderStroke(1.dp, Emerald100),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = if (securitySettings.keystoreBacked) "🛡️ Enkripsi Hardware Keystore AES-256-GCM Aktif" else "🛡️ Enkripsi Lokal AES-256-GCM Aktif",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Emerald950
+                    )
+                    Text(
+                        text = "Database lokal offline, data akun & antrean sinkronisasi tersimpan terenkripsi otomatis.",
+                        fontSize = 11.sp,
+                        color = Slate700
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            if (biometricCapability != BiometricCapability.AVAILABLE) {
+                Surface(color = Amber50, border = BorderStroke(1.dp, Amber200), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "ℹ️ Aktifkan sidik jari, pengenalan wajah, atau kunci layar di Pengaturan HP Anda untuk memakai fitur biometrik.",
+                        fontSize = 11.sp,
+                        color = Amber950,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+            Surface(color = Slate50, border = BorderStroke(1.dp, Slate200), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Kunci Biometrik Aplikasi", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Slate900)
+                            Text("Minta sidik jari / wajah / PIN saat membuka aplikasi", fontSize = 10.sp, color = Slate500)
+                        }
+                        Switch(
+                            checked = securitySettings.biometricLockEnabled,
+                            onCheckedChange = onToggleBiometricLock
+                        )
+                    }
+                    HorizontalDivider(color = Slate200)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Masuk Cepat Biometrik", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Slate900)
+                            Text("Login ke @${user.username} langsung pakai biometrik", fontSize = 10.sp, color = Slate500)
+                        }
+                        Switch(
+                            checked = securitySettings.biometricQuickLoginEnabled,
+                            onCheckedChange = onToggleBiometricQuickLogin
+                        )
+                    }
+                }
+            }
+            if (securitySettings.biometricLockEnabled) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = {
+                        onDismiss()
+                        onLockNow()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Emerald800),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("🔒 Kunci Aplikasi Sekarang", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
                 }
             }
         }
