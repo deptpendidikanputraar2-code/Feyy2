@@ -69,10 +69,13 @@ import com.example.ui.ToastMessage
 import com.example.ui.auth.attemptAutoSignIn
 import com.example.ui.auth.authStateFlow
 import com.example.ui.auth.signOutGoogleAndFirebase
+import com.example.ui.components.AppUpdateDialog
 import com.example.ui.components.EditProfileDialog
 import com.example.ui.components.LiquidGlassSidebarContainer
 import com.example.ui.components.NfcCardReaderHelper
 import com.example.ui.components.NotificationInboxDialog
+import com.example.update.AppUpdateManager
+import com.example.update.AppUpdateState
 import com.example.ui.notifications.FirestoreNotificationViewModel
 import com.example.ui.notifications.MmqaLocalNotifier
 import com.example.ui.notifications.NotificationUiState
@@ -218,7 +221,15 @@ private fun MmqaRootApp(activity: FragmentActivity, viewModel: MmqaViewModel) {
     val pendingMutationCount by viewModel.pendingMutationCount.collectAsStateWithLifecycle()
     val securitySettings by viewModel.securitySettings.collectAsStateWithLifecycle()
     val isAppLocked by viewModel.isAppLocked.collectAsStateWithLifecycle()
+    val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
+    val showUpdateDialog by viewModel.showUpdateDialog.collectAsStateWithLifecycle()
     val biometricCapability = remember { viewModel.getBiometricCapability() }
+
+    val unknownSourcesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        viewModel.onInstallPermissionReturned(context)
+    }
 
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var draftAvatarBase64 by remember { mutableStateOf("") }
@@ -810,6 +821,20 @@ private fun MmqaRootApp(activity: FragmentActivity, viewModel: MmqaViewModel) {
                     showEditProfileDialog = false
                     viewModel.lockAppNow()
                 }
+            )
+        }
+
+        if (showUpdateDialog && !showLockOverlay) {
+            AppUpdateDialog(
+                state = appUpdateState,
+                onStartDownload = { viewModel.startAppUpdateDownload(context) },
+                onOpenInstallPermissionSettings = {
+                    val intent = AppUpdateManager.buildUnknownSourcesSettingsIntent(context)
+                    unknownSourcesLauncher.launch(intent)
+                },
+                onInstallNow = { viewModel.triggerPendingInstall(context) },
+                onRetryCheck = { viewModel.checkForAppUpdate(manual = true) },
+                onDismiss = { viewModel.dismissUpdateDialog() }
             )
         }
     }

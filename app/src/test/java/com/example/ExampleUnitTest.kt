@@ -381,4 +381,19 @@ class ExampleUnitTest {
         // Unregistered NFC returns null
         assertNull(MmqaBarcodeEngine.resolveScannedCode(db, "DEADBEEF"))
     }
+
+    @Test
+    fun app_update_version_check_and_url_validation() {
+        // HTTPS public URL validation
+        assertNull(com.example.update.AppUpdateManager.validateSecureHttpsUrl("https://releases.example.com/mmqa/version.json"))
+        assertNotNull(com.example.update.AppUpdateManager.validateSecureHttpsUrl("http://releases.example.com/version.json"))
+        assertNotNull(com.example.update.AppUpdateManager.validateSecureHttpsUrl("https://localhost/version.json"))
+        assertNotNull(com.example.update.AppUpdateManager.validateSecureHttpsUrl("https://192.168.1.5/version.json"))
+        assertNotNull(com.example.update.AppUpdateManager.validateSecureHttpsUrl("file:///sdcard/app.apk"))
+
+        // versionCode comparison
+        assertTrue(com.example.update.AppUpdateManager.isNewerVersion(currentVersionCode = 1L, remoteVersionCode = 2L))
+        assertFalse(com.example.update.AppUpdateManager.isNewerVersion(currentVersionCode = 2L, remoteVersionCode = 2L))
+        assertFalse(com.example.update.AppUpdateManager.isNewerVersion(currentVersionCode = 3L, remoteVersionCode = 2L))
+    }
 }

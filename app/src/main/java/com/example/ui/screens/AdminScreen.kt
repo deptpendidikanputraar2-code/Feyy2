@@ -973,6 +973,102 @@ fun AdminScreen(
                         }
                     }
                 }
+
+                // Pembaruan APK Otomatis (version.json + FileProvider + Package Installer)
+                Spacer(modifier = Modifier.height(12.dp))
+                val installedVersionInfo = remember { viewModel.getInstalledVersionInfo() }
+                val updateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
+                var versionJsonUrlDraft by remember(cfg.permissions.appUpdateVersionUrl) {
+                    mutableStateOf(cfg.permissions.appUpdateVersionUrl)
+                }
+                SectionCard(containerColor = Emerald50.copy(alpha = 0.45f), borderColor = Emerald100) {
+                    Text(
+                        text = "📲 Pembaruan APK Otomatis (Seperti Play Store)",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Emerald950
+                    )
+                    Text(
+                        text = "Arahkan ke tautan HTTPS berkas version.json Anda (GitHub Releases / Supabase Storage / Hosting HTTPS). URL ini otomatis tersinkronisasi ke seluruh perangkat pengguna.",
+                        fontSize = 11.sp,
+                        color = Slate700
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        StatusPill(
+                            text = "Terpasang: v${installedVersionInfo.second} (Code ${installedVersionInfo.first})",
+                            bgColor = Emerald100,
+                            textColor = Emerald900
+                        )
+                        val statusBadge = when (val st = updateState) {
+                            is com.example.update.AppUpdateState.UpdateAvailable ->
+                                "Baru: v${st.manifest.versionName} (${st.manifest.versionCode})" to Amber100
+                            is com.example.update.AppUpdateState.UpToDate ->
+                                "Versi Terbaru" to Sky100
+                            is com.example.update.AppUpdateState.Checking ->
+                                "Memeriksa..." to Slate100
+                            is com.example.update.AppUpdateState.Error ->
+                                "Perlu Cek URL" to Rose100
+                            else ->
+                                (if (cfg.permissions.appUpdateVersionUrl.isNotBlank()) "URL Siap" else "Belum Diatur") to Slate100
+                        }
+                        StatusPill(
+                            text = statusBadge.first,
+                            bgColor = statusBadge.second,
+                            textColor = Slate900
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = versionJsonUrlDraft,
+                        onValueChange = { versionJsonUrlDraft = it },
+                        label = { Text("URL HTTPS berkas version.json", fontSize = 11.sp) },
+                        placeholder = { Text("https://.../version.json", fontSize = 11.sp) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_version_json_url_input")
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = { viewModel.saveAppUpdateVersionUrl(versionJsonUrlDraft) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Emerald800),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("admin_save_update_url_btn")
+                        ) {
+                            Text("💾 Simpan URL", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val target = versionJsonUrlDraft.trim()
+                                viewModel.checkForAppUpdate(
+                                    manual = true,
+                                    overrideUrl = target.ifBlank { null }
+                                )
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Emerald700),
+                            modifier = Modifier
+                                .weight(1.2f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("admin_check_update_now_btn")
+                        ) {
+                            Text("🔄 Cek Pembaruan", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Emerald900)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Format version.json: { \"versionCode\": 2, \"versionName\": \"1.1.0\", \"apkUrl\": \"https://.../MMQA-AR2.apk\", \"sha256\": \"(opsional)\", \"forceUpdate\": false, \"changelog\": [\"...\"] }",
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Slate700
+                    )
+                }
             }
         }
     }

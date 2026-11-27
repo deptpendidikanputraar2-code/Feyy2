@@ -833,7 +833,8 @@ data class AdminPermissions(
     val batasTelatPagi: String = "05:30",
     val batasTelatSore: String = "16:00",
     val batasTelatMalam: String = "19:30",
-    val batasTelatEvent: String = "08:00"
+    val batasTelatEvent: String = "08:00",
+    val appUpdateVersionUrl: String = ""
 )
 
 data class PasswordRule(

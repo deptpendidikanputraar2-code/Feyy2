@@ -1,9 +1,12 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
+import com.example.update.AppUpdateManager
+import com.example.update.AppUpdateState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.isActive
@@ -118,6 +121,14 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
     private val _isAppLocked = MutableStateFlow(_securitySettings.value.biometricLockEnabled)
     val isAppLocked: StateFlow<Boolean> = _isAppLocked.asStateFlow()
 
+    private val _appUpdateState = MutableStateFlow<AppUpdateState>(AppUpdateState.Idle)
+    val appUpdateState: StateFlow<AppUpdateState> = _appUpdateState.asStateFlow()
+
+    private val _showUpdateDialog = MutableStateFlow(false)
+    val showUpdateDialog: StateFlow<Boolean> = _showUpdateDialog.asStateFlow()
+
+    private var hasAutoCheckedUpdate = false
+
     init {
         // Keep currentUser synchronized whenever remote sync updates users (profile / role / access changes)
         viewModelScope.launch {
@@ -142,6 +153,21 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
                     repository.syncWithGoogleSheets(forcePushEvenIfNoMutations = false)
                 }
             }
+        }
+
+        // Silent background check for APK updates once synced config has a version.json URL
+        viewModelScope.launch {
+            delay(1_800L)
+            repository.database
+                .map { it.adminConfig.permissions.appUpdateVersionUrl.trim() }
+                .distinctUntilChanged()
+                .filter { it.isNotBlank() }
+                .collect { url ->
+                    if (!hasAutoCheckedUpdate && repository.isNetworkAvailable()) {
+                        hasAutoCheckedUpdate = true
+                        checkForAppUpdate(manual = false, overrideUrl = url)
+                    }
+                }
         }
     }
 
@@ -2172,5 +2198,169 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             db.copy(jadwal = db.jadwal.filterNot { it.id == id })
         }
         showToast("Jadwal dihapus.")
+    }
+
+    // =========================================================================
+    // PEMBARUAN APK OTOMATIS (VERSION.JSON + FILEPROVIDER + PACKAGE INSTALLER)
+    // =========================================================================
+    fun getInstalledVersionInfo(): Pair<Long, String> =
+        AppUpdateManager.getInstalledVersionInfo(getApplication())
+
+    fun saveAppUpdateVersionUrl(rawUrl: String): Boolean {
+        val clean = rawUrl.trim()
+        if (clean.isNotBlank()) {
+            val err = AppUpdateManager.validateSecureHttpsUrl(clean)
+            if (err != null) {
+                showToast(err, isError = true)
+                return false
+            }
+        }
+        updateAdminPermissions { it.copy(appUpdateVersionUrl = clean) }
+        if (clean.isBlank()) {
+            showToast("URL version.json dikosongkan.")
+        } else {
+            showToast("URL version.json disimpan & disinkronkan ke seluruh perangkat!")
+        }
+        return true
+    }
+
+    fun checkForAppUpdate(manual: Boolean = false, overrideUrl: String? = null) {
+        val url = (overrideUrl ?: database.value.adminConfig.permissions.appUpdateVersionUrl).trim()
+        if (url.isBlank()) {
+            if (manual) {
+                val msg = "URL version.json belum diatur. Admin dapat mengisinya di Kontrol Admin → tab 6 (Keamanan & Cadangan)."
+                _appUpdateState.value = AppUpdateState.Error(msg)
+                _showUpdateDialog.value = true
+            }
+            return
+        }
+        if (manual) {
+            _showUpdateDialog.value = true
+        }
+        _appUpdateState.value = AppUpdateState.Checking
+        viewModelScope.launch {
+            val result = AppUpdateManager.checkForUpdate(getApplication(), url)
+            _appUpdateState.value = result
+            when (result) {
+                is AppUpdateState.UpdateAvailable -> {
+                    _showUpdateDialog.value = true
+                }
+                is AppUpdateState.UpToDate -> {
+                    if (manual) {
+                        _showUpdateDialog.value = true
+                    }
+                }
+                is AppUpdateState.Error -> {
+                    if (manual) {
+                        _showUpdateDialog.value = true
+                    }
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    fun startAppUpdateDownload(context: Context) {
+        val current = _appUpdateState.value
+        val manifest = when (current) {
+            is AppUpdateState.UpdateAvailable -> current.manifest
+            is AppUpdateState.ReadyToInstall -> current.manifest
+            is AppUpdateState.NeedsInstallPermission -> current.manifest
+            else -> return
+        }
+        _showUpdateDialog.value = true
+        _appUpdateState.value = AppUpdateState.Downloading(
+            manifest = manifest,
+            downloadedBytes = 0L,
+            totalBytes = -1L,
+            progressFraction = -1f
+        )
+        viewModelScope.launch {
+            val downloadRes = AppUpdateManager.downloadApk(
+                context = getApplication(),
+                manifest = manifest,
+                onProgress = { downloaded, total, fraction ->
+                    _appUpdateState.value = AppUpdateState.Downloading(
+                        manifest = manifest,
+                        downloadedBytes = downloaded,
+                        totalBytes = total,
+                        progressFraction = fraction
+                    )
+                }
+            )
+            downloadRes.onSuccess { apkFile ->
+                if (AppUpdateManager.canInstallPackages(context)) {
+                    _appUpdateState.value = AppUpdateState.ReadyToInstall(manifest, apkFile)
+                    triggerPendingInstall(context)
+                } else {
+                    _appUpdateState.value = AppUpdateState.NeedsInstallPermission(manifest, apkFile)
+                }
+            }.onFailure { err ->
+                _appUpdateState.value = AppUpdateState.Error(
+                    err.message ?: "Gagal mengunduh file APK pembaruan."
+                )
+            }
+        }
+    }
+
+    fun onInstallPermissionReturned(context: Context) {
+        val state = _appUpdateState.value
+        val pending = when (state) {
+            is AppUpdateState.NeedsInstallPermission -> state.manifest to state.apkFile
+            is AppUpdateState.ReadyToInstall -> state.manifest to state.apkFile
+            else -> return
+        }
+        if (AppUpdateManager.canInstallPackages(context)) {
+            _appUpdateState.value = AppUpdateState.ReadyToInstall(pending.first, pending.second)
+            triggerPendingInstall(context)
+        } else {
+            showToast("Izin instalasi aplikasi belum diaktifkan di Pengaturan Android.", isError = true)
+        }
+    }
+
+    fun triggerPendingInstall(context: Context) {
+        val state = _appUpdateState.value
+        val (manifest, apkFile) = when (state) {
+            is AppUpdateState.ReadyToInstall -> state.manifest to state.apkFile
+            is AppUpdateState.NeedsInstallPermission -> state.manifest to state.apkFile
+            else -> return
+        }
+        if (!AppUpdateManager.canInstallPackages(context)) {
+            _appUpdateState.value = AppUpdateState.NeedsInstallPermission(manifest, apkFile)
+            return
+        }
+        val res = AppUpdateManager.triggerSystemPackageInstaller(context, apkFile)
+        res.onFailure { err ->
+            _appUpdateState.value = AppUpdateState.Error(
+                err.message ?: "Gagal membuka Package Installer Android."
+            )
+        }
+    }
+
+    fun openUpdateDialogIfAvailable() {
+        val st = _appUpdateState.value
+        if (st is AppUpdateState.UpdateAvailable ||
+            st is AppUpdateState.Downloading ||
+            st is AppUpdateState.ReadyToInstall ||
+            st is AppUpdateState.NeedsInstallPermission
+        ) {
+            _showUpdateDialog.value = true
+        } else {
+            checkForAppUpdate(manual = true)
+        }
+    }
+
+    fun dismissUpdateDialog() {
+        val st = _appUpdateState.value
+        val isMandatory = when (st) {
+            is AppUpdateState.UpdateAvailable -> st.manifest.forceUpdate
+            is AppUpdateState.Downloading -> true
+            is AppUpdateState.ReadyToInstall -> st.manifest.forceUpdate
+            is AppUpdateState.NeedsInstallPermission -> st.manifest.forceUpdate
+            else -> false
+        }
+        if (!isMandatory) {
+            _showUpdateDialog.value = false
+        }
     }
 }

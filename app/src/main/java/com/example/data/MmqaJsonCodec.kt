@@ -808,6 +808,7 @@ object MmqaJsonCodec {
             put("batasTelatSore", cfg.permissions.batasTelatSore)
             put("batasTelatMalam", cfg.permissions.batasTelatMalam)
             put("batasTelatEvent", cfg.permissions.batasTelatEvent)
+            put("appUpdateVersionUrl", cfg.permissions.appUpdateVersionUrl)
         })
         put("passwordRule", JSONObject().apply {
             put("minLength", cfg.passwordRule.minLength)
@@ -891,7 +892,8 @@ object MmqaJsonCodec {
                 batasTelatPagi = permObj.optString("batasTelatPagi", "05:30").ifBlank { "05:30" },
                 batasTelatSore = permObj.optString("batasTelatSore", "16:00").ifBlank { "16:00" },
                 batasTelatMalam = permObj.optString("batasTelatMalam", "19:30").ifBlank { "19:30" },
-                batasTelatEvent = permObj.optString("batasTelatEvent", "08:00").ifBlank { "08:00" }
+                batasTelatEvent = permObj.optString("batasTelatEvent", "08:00").ifBlank { "08:00" },
+                appUpdateVersionUrl = permObj.optString("appUpdateVersionUrl", "").trim()
             )
         } else fallback.permissions
 

@@ -15,7 +15,11 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.BuildConfig
+import com.example.update.AppUpdateState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,6 +84,10 @@ fun MmqaAppShell(
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+    val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
+    val hasAvailableUpdate = appUpdateState is AppUpdateState.UpdateAvailable ||
+        appUpdateState is AppUpdateState.ReadyToInstall ||
+        appUpdateState is AppUpdateState.NeedsInstallPermission
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isWideScreen = maxWidth >= 840.dp
@@ -98,8 +106,10 @@ fun MmqaAppShell(
                     isOnline = isOnline,
                     pendingMutationCount = pendingMutationCount,
                     biometricLockEnabled = biometricLockEnabled,
+                    hasAvailableUpdate = hasAvailableUpdate,
                     onSelectMenu = { viewModel.selectMenu(it) },
                     onOpenEditProfile = onOpenEditProfile,
+                    onCheckAppUpdate = { viewModel.openUpdateDialogIfAvailable() },
                     onLockApp = onLockApp,
                     onLogout = { viewModel.logout() },
                     onGoogleSignOut = onGoogleSignOut,
@@ -158,6 +168,7 @@ fun MmqaAppShell(
                             isOnline = isOnline,
                             pendingMutationCount = pendingMutationCount,
                             biometricLockEnabled = biometricLockEnabled,
+                            hasAvailableUpdate = hasAvailableUpdate,
                             onSelectMenu = { menuId ->
                                 viewModel.selectMenu(menuId)
                                 coroutineScope.launch { drawerState.close() }
@@ -165,6 +176,10 @@ fun MmqaAppShell(
                             onOpenEditProfile = {
                                 coroutineScope.launch { drawerState.close() }
                                 onOpenEditProfile()
+                            },
+                            onCheckAppUpdate = {
+                                coroutineScope.launch { drawerState.close() }
+                                viewModel.openUpdateDialogIfAvailable()
                             },
                             onLockApp = {
                                 coroutineScope.launch { drawerState.close() }
@@ -244,8 +259,10 @@ private fun MmqaSidebarContent(
     isOnline: Boolean,
     pendingMutationCount: Int,
     biometricLockEnabled: Boolean,
+    hasAvailableUpdate: Boolean,
     onSelectMenu: (String) -> Unit,
     onOpenEditProfile: () -> Unit,
+    onCheckAppUpdate: () -> Unit,
     onLockApp: () -> Unit,
     onLogout: () -> Unit,
     onGoogleSignOut: () -> Unit,
@@ -429,6 +446,40 @@ private fun MmqaSidebarContent(
                             color = Amber300
                         )
                     }
+                }
+            }
+            Surface(
+                color = if (hasAvailableUpdate) Amber400 else Color.White.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, if (hasAvailableUpdate) Amber300 else Color.White.copy(alpha = 0.22f)),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 44.dp)
+                    .clickable(onClick = onCheckAppUpdate)
+                    .testTag("sidebar_check_update_button")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SystemUpdate,
+                        contentDescription = "Cek Pembaruan APK",
+                        tint = if (hasAvailableUpdate) Emerald950 else Amber300,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (hasAvailableUpdate) {
+                            "Update APK Tersedia!"
+                        } else {
+                            "Cek Pembaruan (v${BuildConfig.VERSION_NAME})"
+                        },
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (hasAvailableUpdate) Emerald950 else Color.White
+                    )
                 }
             }
             if (biometricLockEnabled) {
