@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <size
+                android:width="260dp"
+                android:height="96dp" />
+            <gradient
+                android:angle="0"
+                android:startColor="#064E3B"
+                android:endColor="#047857" />
+            <corners android:radius="12dp" />
+        </shape>
+    </item>
+    <item
+        android:width="68dp"
+        android:height="68dp"
+        android:gravity="center">
+        <bitmap
+            android:gravity="fill"
+            android:src="@drawable/mmqa_logo" />
+    </item>
+</layer-list>

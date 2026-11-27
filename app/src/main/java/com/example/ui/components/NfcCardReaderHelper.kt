@@ -1,16 +1,18 @@
 package com.example.ui.components
 
+import android.app.Activity
 import android.content.Context
 import android.nfc.NfcAdapter
 import android.nfc.Tag
-import android.nfc.tech.MifareClassic
 import android.os.Build
+import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import java.lang.ref.WeakReference
 
 data class NfcTagEvent(
     val uidHex: String,
@@ -21,8 +23,84 @@ data class NfcTagEvent(
 
 object NfcCardReaderHelper {
 
+    /**
+     * Optimized exclusive NFC reader flags:
+     * - Covers NFC-A (MIFARE Classic 1k / ISO-DEP), NFC-B, and NFC-F (FeliCa) to block external
+     *   balance-check apps while avoiding slow Kovio NFC-Barcode and ISO-15693 (NFC-V) RF poll stalls.
+     * - Skips NDEF parsing and platform sounds for instant tag UID delivery.
+     */
+    const val EXCLUSIVE_READER_FLAGS: Int =
+        NfcAdapter.FLAG_READER_NFC_A or
+            NfcAdapter.FLAG_READER_NFC_B or
+            NfcAdapter.FLAG_READER_NFC_F or
+            NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or
+            NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
+
+    private var activeActivityRef: WeakReference<Activity>? = null
+
+    @Volatile
+    private var isReaderModeArmed: Boolean = false
+
+    private val readerCallback = NfcAdapter.ReaderCallback { tag ->
+        onTagDiscovered(tag)
+    }
+
     private val _events = MutableSharedFlow<NfcTagEvent>(extraBufferCapacity = 16)
     val events: SharedFlow<NfcTagEvent> = _events.asSharedFlow()
+
+    @Synchronized
+    fun enableExclusiveReaderMode(activity: Activity, forceRearm: Boolean = false) {
+        runCatching {
+            val adapter = NfcAdapter.getDefaultAdapter(activity) ?: return
+            if (!adapter.isEnabled) {
+                isReaderModeArmed = false
+                return
+            }
+            // Do NOT tear down and restart the NFC RF polling loop if already armed for this Activity
+            if (!forceRearm && isReaderModeArmed && activeActivityRef?.get() === activity) {
+                return
+            }
+            val extras = Bundle().apply {
+                putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 120)
+            }
+            adapter.enableReaderMode(
+                activity,
+                readerCallback,
+                EXCLUSIVE_READER_FLAGS,
+                extras
+            )
+            activeActivityRef = WeakReference(activity)
+            isReaderModeArmed = true
+        }
+    }
+
+    fun enableExclusiveReaderModeForContext(context: Context, forceRearm: Boolean = false) {
+        var cur: Context? = context
+        while (cur is android.content.ContextWrapper) {
+            if (cur is Activity) {
+                enableExclusiveReaderMode(cur, forceRearm = forceRearm)
+                return
+            }
+            cur = cur.baseContext
+        }
+        if (cur is Activity) {
+            enableExclusiveReaderMode(cur, forceRearm = forceRearm)
+        }
+    }
+
+    @Synchronized
+    fun disableReaderMode(activity: Activity) {
+        isReaderModeArmed = false
+        activeActivityRef = null
+        runCatching {
+            NfcAdapter.getDefaultAdapter(activity)?.disableReaderMode(activity)
+        }
+    }
+
+    @Synchronized
+    fun onAdapterDisabled() {
+        isReaderModeArmed = false
+    }
 
     /**
      * Converts raw NFC tag UID bytes (e.g. from NXP MIFARE Classic 1k)
@@ -51,19 +129,31 @@ object NfcCardReaderHelper {
         val uidHex = formatUidHex(tag.id)
         if (uidHex.isBlank()) return
 
-        val techs = tag.techList?.toList().orEmpty()
-        val hasMifareClassic = techs.any { it.contains("MifareClassic", ignoreCase = true) }
-        val is1k = if (hasMifareClassic) {
-            runCatching {
-                val mifare = MifareClassic.get(tag)
-                mifare?.type == MifareClassic.TYPE_CLASSIC && mifare.size == MifareClassic.SIZE_1K
-            }.getOrDefault(false)
-        } else false
+        // Inspect cached techList directly without blocking Binder IPC so UID emits instantaneously
+        val techs = tag.techList
+        var hasMifareClassic = false
+        var hasIsoDep = false
+        var hasNfcA = false
+        var hasNfcB = false
+        var hasNfcF = false
+        if (techs != null) {
+            for (tech in techs) {
+                when {
+                    tech.endsWith("MifareClassic") -> hasMifareClassic = true
+                    tech.endsWith("IsoDep") -> hasIsoDep = true
+                    tech.endsWith("NfcA") -> hasNfcA = true
+                    tech.endsWith("NfcB") -> hasNfcB = true
+                    tech.endsWith("NfcF") -> hasNfcF = true
+                }
+            }
+        }
 
         val techLabel = when {
-            is1k -> "MIFARE Classic 1K"
-            hasMifareClassic -> "MIFARE Classic"
-            techs.any { it.contains("NfcA", ignoreCase = true) } -> "ISO 14443-A (NfcA)"
+            hasMifareClassic -> "MIFARE Classic 1K"
+            hasIsoDep -> "ISO-DEP / Smartcard"
+            hasNfcA -> "ISO 14443-A (NfcA)"
+            hasNfcB -> "ISO 14443-B (NfcB)"
+            hasNfcF -> "FeliCa (NfcF)"
             else -> "NFC Tag"
         }
 
@@ -71,7 +161,7 @@ object NfcCardReaderHelper {
             NfcTagEvent(
                 uidHex = uidHex,
                 techLabel = techLabel,
-                isMifareClassic1k = is1k || hasMifareClassic,
+                isMifareClassic1k = hasMifareClassic,
                 timestampMs = System.currentTimeMillis()
             )
         )
@@ -82,7 +172,23 @@ object NfcCardReaderHelper {
         return when {
             adapter == null -> false to "HP ini tidak memiliki sensor NFC (Kamera Barcode tetap aktif)"
             !adapter.isEnabled -> false to "Sensor NFC nonaktif — aktifkan NFC di Pengaturan HP"
-            else -> true to "NFC Reader Aktif (Siap MIFARE Classic 1k)"
+            else -> true to "NFC Reader Eksklusif Aktif (MIFARE Classic 1k)"
+        }
+    }
+
+    fun openOtherNfcServicesSettings(context: Context) {
+        val candidates = listOf(
+            android.content.Intent(android.provider.Settings.ACTION_NFC_PAYMENT_SETTINGS),
+            android.content.Intent(android.provider.Settings.ACTION_NFC_SETTINGS),
+            android.content.Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)
+        )
+        for (intent in candidates) {
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            val launched = runCatching {
+                context.startActivity(intent)
+                true
+            }.getOrDefault(false)
+            if (launched) return
         }
     }
 

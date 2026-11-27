@@ -804,8 +804,8 @@ private fun NfcAndBarcodeLinkSection(
     viewModel: MmqaViewModel
 ) {
     val context = LocalContext.current
-    val nfcStatus = remember(context) { NfcCardReaderHelper.getNfcStatus(context) }
     var isNfcLinkMode by remember { mutableStateOf(false) }
+    val nfcStatus = remember(context, isNfcLinkMode) { NfcCardReaderHelper.getNfcStatus(context) }
     var showBarcodeCapture by remember { mutableStateOf(false) }
     var showCardPreview by remember { mutableStateOf(false) }
     var linkFeedbackMsg by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
@@ -819,6 +819,7 @@ private fun NfcAndBarcodeLinkSection(
 
     LaunchedEffect(isNfcLinkMode, editId) {
         if (isNfcLinkMode) {
+            NfcCardReaderHelper.enableExclusiveReaderModeForContext(context)
             NfcCardReaderHelper.events.collect { tagEvent ->
                 val uid = tagEvent.uidHex
                 val dupOwner = viewModel.findDuplicateNfcOwner(uid, tipe, editId)
@@ -861,17 +862,27 @@ private fun NfcAndBarcodeLinkSection(
                     text = "🪪 Identitas Kartu Barcode & NFC",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.ExtraBold,
-                    color = Emerald900
+                    color = Emerald900,
+                    modifier = Modifier.weight(1f)
                 )
-                if (previewCard != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(
-                        onClick = { showCardPreview = true },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        onClick = { NfcCardReaderHelper.openOtherNfcServicesSettings(context) },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                         modifier = Modifier.defaultMinSize(minHeight = 36.dp)
                     ) {
-                        Icon(Icons.Default.QrCode2, contentDescription = "Lihat Kartu QR", tint = Emerald800, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Kartu QR", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Emerald800)
+                        Text("Layanan NFC", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Sky700)
+                    }
+                    if (previewCard != null) {
+                        TextButton(
+                            onClick = { showCardPreview = true },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            modifier = Modifier.defaultMinSize(minHeight = 36.dp)
+                        ) {
+                            Icon(Icons.Default.QrCode2, contentDescription = "Lihat Kartu QR", tint = Emerald800, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Kartu QR", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Emerald800)
+                        }
                     }
                 }
             }

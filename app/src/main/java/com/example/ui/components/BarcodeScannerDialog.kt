@@ -253,6 +253,7 @@ fun BarcodeScannerDialog(
     }
 
     LaunchedEffect(Unit) {
+        NfcCardReaderHelper.enableExclusiveReaderModeForContext(context)
         NfcCardReaderHelper.events.collect { tagEvent ->
             lastNfcUidSeen = "${tagEvent.uidHex} (${tagEvent.techLabel})"
             handleRawCode(tagEvent.uidHex, isNfc = true, techLabel = tagEvent.techLabel)
@@ -289,13 +290,15 @@ fun BarcodeScannerDialog(
                     color = if (nfcStatus.first) Sky100 else Slate100,
                     border = BorderStroke(1.dp, if (nfcStatus.first) Sky700.copy(alpha = 0.35f) else Slate200),
                     shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { NfcCardReaderHelper.openOtherNfcServicesSettings(context) }
                 ) {
                     Text(
                         text = if (nfcStatus.first) {
-                            "📡 ${nfcStatus.second}" + (lastNfcUidSeen?.let { " • Terakhir: $it" } ?: " — Tempelkan kartu kapan saja")
+                            "📡 ${nfcStatus.second}" + (lastNfcUidSeen?.let { " • Terakhir: $it" } ?: " — Tempelkan kartu / ketuk untuk Layanan NFC")
                         } else {
-                            "📱 ${nfcStatus.second}"
+                            "📱 ${nfcStatus.second} (Ketuk untuk atur)"
                         },
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,

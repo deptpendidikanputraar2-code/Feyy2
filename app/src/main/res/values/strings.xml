@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">MMQA AR2</string>
+    <string name="nfc_hce_service_desc">MMQA AR2 Absensi &amp; Kartu NFC Santri</string>
+    <string name="nfc_hce_aid_group_desc">Layanan Kartu Santri, Muallim &amp; Dewan MMQA AR2</string>
 </resources>

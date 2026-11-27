@@ -1,15 +1,21 @@
 package com.example
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.nfc.NfcAdapter
+import android.nfc.Tag
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.util.Base64
+import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -83,16 +89,23 @@ import java.io.OutputStreamWriter
 import kotlin.math.max
 
 class MainActivity : FragmentActivity() {
-    private var nfcAdapter: NfcAdapter? = null
 
-    private val nfcReaderCallback = NfcAdapter.ReaderCallback { tag ->
-        NfcCardReaderHelper.onTagDiscovered(tag)
+    private var nfcStateReceiverRegistered = false
+
+    private val nfcStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == NfcAdapter.ACTION_ADAPTER_STATE_CHANGED) {
+                when (intent.getIntExtra(NfcAdapter.EXTRA_ADAPTER_STATE, NfcAdapter.STATE_OFF)) {
+                    NfcAdapter.STATE_ON -> NfcCardReaderHelper.enableExclusiveReaderMode(this@MainActivity, forceRearm = true)
+                    NfcAdapter.STATE_OFF, NfcAdapter.STATE_TURNING_OFF -> NfcCardReaderHelper.onAdapterDisabled()
+                }
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        nfcAdapter = runCatching { NfcAdapter.getDefaultAdapter(this) }.getOrNull()
         setContent {
             MmqaAr2Theme {
                 val vm: MmqaViewModel = viewModel()
@@ -103,18 +116,42 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
-        runCatching {
-            nfcAdapter?.enableReaderMode(
-                this,
-                nfcReaderCallback,
-                NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK,
-                null
-            )
+        if (!nfcStateReceiverRegistered) {
+            runCatching {
+                ContextCompat.registerReceiver(
+                    this,
+                    nfcStateReceiver,
+                    IntentFilter(NfcAdapter.ACTION_ADAPTER_STATE_CHANGED),
+                    ContextCompat.RECEIVER_NOT_EXPORTED
+                )
+                nfcStateReceiverRegistered = true
+            }
+        }
+        NfcCardReaderHelper.enableExclusiveReaderMode(this)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            NfcCardReaderHelper.enableExclusiveReaderMode(this)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val tag = IntentCompat.getParcelableExtra(intent, NfcAdapter.EXTRA_TAG, Tag::class.java)
+        if (tag != null) {
+            NfcCardReaderHelper.onTagDiscovered(tag)
         }
     }
 
     override fun onPause() {
-        runCatching { nfcAdapter?.disableReaderMode(this) }
+        NfcCardReaderHelper.disableReaderMode(this)
+        if (nfcStateReceiverRegistered) {
+            runCatching { unregisterReceiver(nfcStateReceiver) }
+            nfcStateReceiverRegistered = false
+        }
         super.onPause()
     }
 }
