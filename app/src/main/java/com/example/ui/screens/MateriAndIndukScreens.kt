@@ -817,30 +817,51 @@ private fun NfcAndBarcodeLinkSection(
         onDispose { runCatching { toneGen?.release() } }
     }
 
-    LaunchedEffect(isNfcLinkMode, editId) {
-        if (isNfcLinkMode) {
-            NfcCardReaderHelper.enableExclusiveReaderModeForContext(context)
+    var lastDetectedUid by remember { mutableStateOf<String?>(null) }
+    var lastDetectedTech by remember { mutableStateOf("") }
+
+    val latestIsNfcLinkMode by rememberUpdatedState(isNfcLinkMode)
+    val latestUidNfc by rememberUpdatedState(uidNfc)
+    val latestEditId by rememberUpdatedState(editId)
+    val latestOnUidNfcChange by rememberUpdatedState(onUidNfcChange)
+
+    fun applyScannedUid(uid: String, techLabel: String) {
+        val dupOwner = viewModel.findDuplicateNfcOwner(uid, tipe, latestEditId)
+        if (dupOwner != null) {
+            NfcCardReaderHelper.triggerHapticFeedback(context, isSuccess = false)
+            runCatching { toneGen?.startTone(ToneGenerator.TONE_SUP_ERROR, 260) }
+            linkFeedbackMsg = false to "Kartu NFC ($uid) sudah tertaut ke $dupOwner!"
+            viewModel.showToast("Kartu NFC ($uid) sudah dipakai oleh $dupOwner!", isError = true)
+        } else {
+            NfcCardReaderHelper.triggerHapticFeedback(context, isSuccess = true)
+            runCatching { toneGen?.startTone(ToneGenerator.TONE_PROP_ACK, 200) }
+            latestOnUidNfcChange(uid)
+            lastDetectedUid = null
+            val curEditId = latestEditId
+            if (curEditId != null) {
+                val saved = viewModel.linkNfcToIndukRecord(tipe, curEditId, uid)
+                if (saved) {
+                    linkFeedbackMsg = true to "UID NFC $uid (${techLabel.ifBlank { "NFC" }}) tersimpan! Tempel kartu lain jika ingin mengganti."
+                }
+            } else {
+                linkFeedbackMsg = true to "UID NFC $uid terdeteksi! Klik Simpan untuk menyimpan data."
+            }
+            isNfcLinkMode = false
+        }
+    }
+
+    LaunchedEffect(showBarcodeCapture, showCardPreview) {
+        if (!showBarcodeCapture && !showCardPreview) {
+            NfcCardReaderHelper.enableExclusiveReaderModeForContext(context, forceRearm = true)
             NfcCardReaderHelper.events.collect { tagEvent ->
                 val uid = tagEvent.uidHex
-                val dupOwner = viewModel.findDuplicateNfcOwner(uid, tipe, editId)
-                if (dupOwner != null) {
-                    NfcCardReaderHelper.triggerHapticFeedback(context, isSuccess = false)
-                    runCatching { toneGen?.startTone(ToneGenerator.TONE_SUP_ERROR, 260) }
-                    linkFeedbackMsg = false to "Kartu NFC ($uid) sudah tertaut ke $dupOwner!"
-                    viewModel.showToast("Kartu NFC ($uid) sudah dipakai oleh $dupOwner!", isError = true)
+                if (latestIsNfcLinkMode || latestUidNfc.isBlank()) {
+                    applyScannedUid(uid, tagEvent.techLabel)
                 } else {
                     NfcCardReaderHelper.triggerHapticFeedback(context, isSuccess = true)
-                    runCatching { toneGen?.startTone(ToneGenerator.TONE_PROP_ACK, 200) }
-                    onUidNfcChange(uid)
-                    if (editId != null) {
-                        val saved = viewModel.linkNfcToIndukRecord(tipe, editId, uid)
-                        if (saved) {
-                            linkFeedbackMsg = true to "UID NFC $uid (${tagEvent.techLabel}) berhasil tersimpan ke database!"
-                        }
-                    } else {
-                        linkFeedbackMsg = true to "UID NFC $uid terdeteksi! Klik Simpan untuk menyimpan data."
-                    }
-                    isNfcLinkMode = false
+                    lastDetectedUid = uid
+                    lastDetectedTech = tagEvent.techLabel
+                    linkFeedbackMsg = true to "Kartu NFC ($uid • ${tagEvent.techLabel}) terbaca! Ketuk tombol di bawah untuk mengganti UID saat ini."
                 }
             }
         }
@@ -915,6 +936,8 @@ private fun NfcAndBarcodeLinkSection(
                         isNfcLinkMode = !isNfcLinkMode
                         if (isNfcLinkMode) {
                             linkFeedbackMsg = null
+                            lastDetectedUid = null
+                            NfcCardReaderHelper.enableExclusiveReaderModeForContext(context, forceRearm = true)
                         }
                     },
                     colors = ButtonDefaults.buttonColors(
@@ -995,13 +1018,30 @@ private fun NfcAndBarcodeLinkSection(
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = if (isOk) "✅ $msg" else "⚠️ $msg",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isOk) Emerald900 else Rose800,
-                        modifier = Modifier.padding(8.dp)
-                    )
+                    Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = if (isOk) "✅ $msg" else "⚠️ $msg",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isOk) Emerald900 else Rose800
+                        )
+                        val pendingUid = lastDetectedUid
+                        if (pendingUid != null && pendingUid != uidNfc) {
+                            Button(
+                                onClick = { applyScannedUid(pendingUid, lastDetectedTech) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Sky700),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.defaultMinSize(minHeight = 36.dp)
+                            ) {
+                                Text(
+                                    text = "Gunakan UID $pendingUid",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1015,20 +1055,30 @@ private fun NfcAndBarcodeLinkSection(
                 if (editId != null) {
                     val saved = viewModel.linkBarcodeToIndukRecord(tipe, editId, scannedCode)
                     if (saved) {
-                        linkFeedbackMsg = true to "Barcode '$scannedCode' tersimpan ke id_santri & siap dijadikan bahan barcode baru!"
+                        linkFeedbackMsg = true to "Barcode '$scannedCode' tersimpan ke id_santri!" +
+                            if (uidNfc.isBlank()) " Sekarang tempelkan kartu NFC jika ingin menautkan uid_nfc." else ""
                     }
                 } else {
                     linkFeedbackMsg = true to "Barcode '$scannedCode' terdeteksi untuk id_santri! Klik Simpan untuk menyimpan."
                 }
+                if (uidNfc.isBlank()) {
+                    isNfcLinkMode = true
+                }
             },
-            onDismiss = { showBarcodeCapture = false }
+            onDismiss = {
+                showBarcodeCapture = false
+                NfcCardReaderHelper.enableExclusiveReaderModeForContext(context, forceRearm = true)
+            }
         )
     }
 
     if (showCardPreview && previewCard != null) {
         BarcodeCardPreviewDialog(
             card = previewCard,
-            onDismiss = { showCardPreview = false }
+            onDismiss = {
+                showCardPreview = false
+                NfcCardReaderHelper.enableExclusiveReaderModeForContext(context, forceRearm = true)
+            }
         )
     }
 }

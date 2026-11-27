@@ -198,8 +198,9 @@ fun BarcodeScannerDialog(
         val trimmed = raw.trim()
         if (trimmed.isBlank()) return
         val now = System.currentTimeMillis()
+        val cooldownMs = if (isNfc) 900L else 2200L
         val prev = lastSeenTimestamps[trimmed] ?: 0L
-        if (now - prev < 2500L) return
+        if (now - prev < cooldownMs) return
         lastSeenTimestamps[trimmed] = now
 
         val card = MmqaBarcodeEngine.resolveScannedCode(db, trimmed)
@@ -252,11 +253,22 @@ fun BarcodeScannerDialog(
         }
     }
 
+    val latestHandleRawCode by rememberUpdatedState { raw: String, isNfc: Boolean, techLabel: String ->
+        handleRawCode(raw, isNfc, techLabel)
+    }
+
+    DisposableEffect(Unit) {
+        NfcCardReaderHelper.enableExclusiveReaderModeForContext(context, forceRearm = true)
+        onDispose {
+            NfcCardReaderHelper.enableExclusiveReaderModeForContext(context, forceRearm = true)
+        }
+    }
+
     LaunchedEffect(Unit) {
-        NfcCardReaderHelper.enableExclusiveReaderModeForContext(context)
+        NfcCardReaderHelper.enableExclusiveReaderModeForContext(context, forceRearm = true)
         NfcCardReaderHelper.events.collect { tagEvent ->
             lastNfcUidSeen = "${tagEvent.uidHex} (${tagEvent.techLabel})"
-            handleRawCode(tagEvent.uidHex, isNfc = true, techLabel = tagEvent.techLabel)
+            latestHandleRawCode(tagEvent.uidHex, true, tagEvent.techLabel)
         }
     }
 
@@ -666,7 +678,10 @@ fun SingleBarcodeCaptureDialog(
         runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 95) }.getOrNull()
     }
     DisposableEffect(Unit) {
-        onDispose { runCatching { toneGen?.release() } }
+        onDispose {
+            runCatching { toneGen?.release() }
+            NfcCardReaderHelper.enableExclusiveReaderModeForContext(context, forceRearm = true)
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -791,9 +806,28 @@ private fun CameraBarcodePreview(
     val currentOnDetected by rememberUpdatedState(onBarcodeDetected)
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val scanner = remember { BarcodeScanning.getClient() }
+    var isDisposed by remember { mutableStateOf(false) }
+    var boundProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    var boundPreview by remember { mutableStateOf<Preview?>(null) }
+    var boundAnalyzer by remember { mutableStateOf<ImageAnalysis?>(null) }
 
     DisposableEffect(Unit) {
         onDispose {
+            isDisposed = true
+            runCatching {
+                val provider = boundProvider
+                if (provider != null) {
+                    val useCases = listOfNotNull(boundPreview, boundAnalyzer).toTypedArray()
+                    if (useCases.isNotEmpty()) {
+                        provider.unbind(*useCases)
+                    } else {
+                        provider.unbindAll()
+                    }
+                }
+            }
+            boundProvider = null
+            boundPreview = null
+            boundAnalyzer = null
             runCatching { scanner.close() }
             runCatching { cameraExecutor.shutdown() }
         }
@@ -806,6 +840,7 @@ private fun CameraBarcodePreview(
             }
             val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
             cameraProviderFuture.addListener({
+                if (isDisposed) return@addListener
                 runCatching {
                     val cameraProvider = cameraProviderFuture.get()
                     val preview = Preview.Builder().build().also {
@@ -816,6 +851,10 @@ private fun CameraBarcodePreview(
                         .build()
                         .also { analysis ->
                             analysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                                if (isDisposed) {
+                                    imageProxy.close()
+                                    return@setAnalyzer
+                                }
                                 val mediaImage = imageProxy.image
                                 if (mediaImage != null) {
                                     val inputImage = InputImage.fromMediaImage(
@@ -824,10 +863,13 @@ private fun CameraBarcodePreview(
                                     )
                                     scanner.process(inputImage)
                                         .addOnSuccessListener { barcodes ->
+                                            if (isDisposed) return@addOnSuccessListener
                                             val firstVal = barcodes.firstOrNull { !it.rawValue.isNullOrBlank() }?.rawValue
                                             if (!firstVal.isNullOrBlank()) {
                                                 ContextCompat.getMainExecutor(ctx).execute {
-                                                    currentOnDetected(firstVal)
+                                                    if (!isDisposed) {
+                                                        currentOnDetected(firstVal)
+                                                    }
                                                 }
                                             }
                                         }
@@ -847,6 +889,9 @@ private fun CameraBarcodePreview(
                         preview,
                         analyzer
                     )
+                    boundProvider = cameraProvider
+                    boundPreview = preview
+                    boundAnalyzer = analyzer
                     onCameraReady(camera)
                 }
             }, ContextCompat.getMainExecutor(ctx))

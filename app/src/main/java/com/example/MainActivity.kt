@@ -127,7 +127,7 @@ class MainActivity : FragmentActivity() {
                 nfcStateReceiverRegistered = true
             }
         }
-        NfcCardReaderHelper.enableExclusiveReaderMode(this)
+        NfcCardReaderHelper.enableExclusiveReaderMode(this, forceRearm = true)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

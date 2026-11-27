@@ -5,10 +5,10 @@ import android.content.Context
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.os.Build
-import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -36,16 +36,24 @@ object NfcCardReaderHelper {
             NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or
             NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
 
+    private const val REARM_DEBOUNCE_MS = 400L
+
     private var activeActivityRef: WeakReference<Activity>? = null
 
     @Volatile
     private var isReaderModeArmed: Boolean = false
 
+    @Volatile
+    private var lastArmedAtMs: Long = 0L
+
     private val readerCallback = NfcAdapter.ReaderCallback { tag ->
         onTagDiscovered(tag)
     }
 
-    private val _events = MutableSharedFlow<NfcTagEvent>(extraBufferCapacity = 16)
+    private val _events = MutableSharedFlow<NfcTagEvent>(
+        extraBufferCapacity = 32,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     val events: SharedFlow<NfcTagEvent> = _events.asSharedFlow()
 
     @Synchronized
@@ -56,21 +64,27 @@ object NfcCardReaderHelper {
                 isReaderModeArmed = false
                 return
             }
-            // Do NOT tear down and restart the NFC RF polling loop if already armed for this Activity
-            if (!forceRearm && isReaderModeArmed && activeActivityRef?.get() === activity) {
+            val now = System.currentTimeMillis()
+            // Debounce rapid duplicate calls (e.g. onResume + immediate onWindowFocusChanged)
+            // without permanently locking out re-arming after dialogs or RF stalls.
+            if (!forceRearm &&
+                isReaderModeArmed &&
+                activeActivityRef?.get() === activity &&
+                (now - lastArmedAtMs) < REARM_DEBOUNCE_MS
+            ) {
                 return
             }
-            val extras = Bundle().apply {
-                putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 120)
-            }
+            // Pass null extras so the OEM NFC HAL uses its safe native presence-check timing
+            // and never stalls after the first MIFARE Classic / NFC-A tag.
             adapter.enableReaderMode(
                 activity,
                 readerCallback,
                 EXCLUSIVE_READER_FLAGS,
-                extras
+                null
             )
             activeActivityRef = WeakReference(activity)
             isReaderModeArmed = true
+            lastArmedAtMs = now
         }
     }
 
@@ -91,6 +105,7 @@ object NfcCardReaderHelper {
     @Synchronized
     fun disableReaderMode(activity: Activity) {
         isReaderModeArmed = false
+        lastArmedAtMs = 0L
         activeActivityRef = null
         runCatching {
             NfcAdapter.getDefaultAdapter(activity)?.disableReaderMode(activity)
@@ -100,6 +115,7 @@ object NfcCardReaderHelper {
     @Synchronized
     fun onAdapterDisabled() {
         isReaderModeArmed = false
+        lastArmedAtMs = 0L
     }
 
     /**
@@ -126,45 +142,47 @@ object NfcCardReaderHelper {
 
     fun onTagDiscovered(tag: Tag?) {
         if (tag == null) return
-        val uidHex = formatUidHex(tag.id)
-        if (uidHex.isBlank()) return
+        runCatching {
+            val uidHex = formatUidHex(tag.id)
+            if (uidHex.isBlank()) return
 
-        // Inspect cached techList directly without blocking Binder IPC so UID emits instantaneously
-        val techs = tag.techList
-        var hasMifareClassic = false
-        var hasIsoDep = false
-        var hasNfcA = false
-        var hasNfcB = false
-        var hasNfcF = false
-        if (techs != null) {
-            for (tech in techs) {
-                when {
-                    tech.endsWith("MifareClassic") -> hasMifareClassic = true
-                    tech.endsWith("IsoDep") -> hasIsoDep = true
-                    tech.endsWith("NfcA") -> hasNfcA = true
-                    tech.endsWith("NfcB") -> hasNfcB = true
-                    tech.endsWith("NfcF") -> hasNfcF = true
+            // Inspect cached techList directly without blocking Binder IPC so UID emits instantaneously
+            val techs = tag.techList
+            var hasMifareClassic = false
+            var hasIsoDep = false
+            var hasNfcA = false
+            var hasNfcB = false
+            var hasNfcF = false
+            if (techs != null) {
+                for (tech in techs) {
+                    when {
+                        tech.endsWith("MifareClassic") -> hasMifareClassic = true
+                        tech.endsWith("IsoDep") -> hasIsoDep = true
+                        tech.endsWith("NfcA") -> hasNfcA = true
+                        tech.endsWith("NfcB") -> hasNfcB = true
+                        tech.endsWith("NfcF") -> hasNfcF = true
+                    }
                 }
             }
-        }
 
-        val techLabel = when {
-            hasMifareClassic -> "MIFARE Classic 1K"
-            hasIsoDep -> "ISO-DEP / Smartcard"
-            hasNfcA -> "ISO 14443-A (NfcA)"
-            hasNfcB -> "ISO 14443-B (NfcB)"
-            hasNfcF -> "FeliCa (NfcF)"
-            else -> "NFC Tag"
-        }
+            val techLabel = when {
+                hasMifareClassic -> "MIFARE Classic 1K"
+                hasIsoDep -> "ISO-DEP / Smartcard"
+                hasNfcA -> "ISO 14443-A (NfcA)"
+                hasNfcB -> "ISO 14443-B (NfcB)"
+                hasNfcF -> "FeliCa (NfcF)"
+                else -> "NFC Tag"
+            }
 
-        _events.tryEmit(
-            NfcTagEvent(
-                uidHex = uidHex,
-                techLabel = techLabel,
-                isMifareClassic1k = hasMifareClassic,
-                timestampMs = System.currentTimeMillis()
+            _events.tryEmit(
+                NfcTagEvent(
+                    uidHex = uidHex,
+                    techLabel = techLabel,
+                    isMifareClassic1k = hasMifareClassic,
+                    timestampMs = System.currentTimeMillis()
+                )
             )
-        )
+        }
     }
 
     fun getNfcStatus(context: Context): Pair<Boolean, String> {

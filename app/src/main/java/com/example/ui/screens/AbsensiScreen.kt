@@ -124,11 +124,11 @@ fun AbsensiScreen(
     // Allow tapping MIFARE NFC cards directly on the Absensi screen even when camera dialog isn't open
     LaunchedEffect(canScanBarcode, showScannerDialog) {
         if (canScanBarcode && !showScannerDialog) {
-            NfcCardReaderHelper.enableExclusiveReaderModeForContext(context)
+            NfcCardReaderHelper.enableExclusiveReaderModeForContext(context, forceRearm = true)
             NfcCardReaderHelper.events.collect { tagEvent ->
                 val uid = tagEvent.uidHex
                 val now = System.currentTimeMillis()
-                if (now - (directNfcCooldown[uid] ?: 0L) < 2500L) return@collect
+                if (now - (directNfcCooldown[uid] ?: 0L) < 900L) return@collect
                 directNfcCooldown[uid] = now
 
                 val card = MmqaBarcodeEngine.resolveScannedCode(latestDb, uid)
