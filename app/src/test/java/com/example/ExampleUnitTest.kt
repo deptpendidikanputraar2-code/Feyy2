@@ -396,4 +396,38 @@ class ExampleUnitTest {
         assertFalse(com.example.update.AppUpdateManager.isNewerVersion(currentVersionCode = 2L, remoteVersionCode = 2L))
         assertFalse(com.example.update.AppUpdateManager.isNewerVersion(currentVersionCode = 3L, remoteVersionCode = 2L))
     }
+
+    @Test
+    fun data_santri_pdf_includes_muallim_per_firqoh() {
+        val db = MmqaDefaults.createDefaultDatabase().copy(
+            firqoh = listOf(
+                FirqohItem("F1", "F-01", "Firqoh Ula A", "Ula", "Pagi", "Aula 1"),
+                FirqohItem("F2", "F-02", "Firqoh Wustho B", "Wustho", "Malam", "Aula 2")
+            ),
+            santri = listOf(
+                SantriItem("S1", "202601", "Ahmad Zaki", "F1", "2026", "Wali 1", "0811"),
+                SantriItem("S2", "202602", "Budi Santoso", "F2", "2026", "Wali 2", "0812")
+            ),
+            muallim = listOf(
+                MuallimItem("M1", "NIY-1", "Ust. Mansur", "F1", "Nahwu", "0821"),
+                MuallimItem("M2", "NIY-2", "Ust. Hakim", "F2", "Fiqih", "0822")
+            )
+        )
+        val htmlSingle = com.example.ui.components.MmqaReportFormatters.buildDataSantriPdfHtml(
+            db = db,
+            filterLabel = "Firqoh Ula A",
+            santriList = listOf(db.santri[0])
+        )
+        assertTrue(htmlSingle.contains("<th>Mu&#39;allim</th>") || htmlSingle.contains("Mu'allim"))
+        assertTrue(htmlSingle.contains("Ust. Mansur"))
+        assertFalse(htmlSingle.contains("Ust. Hakim"))
+
+        val htmlAll = com.example.ui.components.MmqaReportFormatters.buildDataSantriPdfHtml(
+            db = db,
+            filterLabel = "Semua Firqoh",
+            santriList = db.santri
+        )
+        assertTrue(htmlAll.contains("Ust. Mansur"))
+        assertTrue(htmlAll.contains("Ust. Hakim"))
+    }
 }

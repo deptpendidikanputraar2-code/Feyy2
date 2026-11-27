@@ -300,18 +300,32 @@ object MmqaReportFormatters {
     // =========================================================================
     // 3. DATA INDUK (SANTRI, MU'ALLIM, DEWAN HARIAN)
     // =========================================================================
+    private fun muallimNamesForFirqoh(db: MmqaDatabase, firqohId: String): String {
+        val names = db.muallim
+            .filter { it.firqohId == firqohId && it.nama.isNotBlank() }
+            .map { it.nama.trim() }
+            .distinct()
+        return if (names.isEmpty()) "-" else names.joinToString(", ")
+    }
+
     fun buildDataSantriWa(
         db: MmqaDatabase,
         filterLabel: String,
         santriList: List<SantriItem>
     ): String = buildString {
+        val distinctFirqohIds = santriList.map { it.firqohId }.filter { it.isNotBlank() }.distinct()
+        val singleMuallim = if (distinctFirqohIds.size == 1) muallimNamesForFirqoh(db, distinctFirqohIds.first()) else null
         appendLine("🗂️ *DATA INDUK SANTRI MMQA AR2*")
         appendLine("Filter: *$filterLabel* (${santriList.size} Santri)")
+        if (!singleMuallim.isNullOrBlank() && singleMuallim != "-") {
+            appendLine("Mu'allim: *$singleMuallim*")
+        }
         appendLine("_Tanggal: ${MmqaConstants.todayStr()}_")
         appendLine()
         santriList.forEachIndexed { idx, s ->
+            val muallim = muallimNamesForFirqoh(db, s.firqohId)
             appendLine("${idx + 1}. *${s.nama}* (NIS ${s.nis})")
-            appendLine("   ${firqohName(db, s.firqohId)} • Angk. ${s.angkatan.ifBlank { "-" }}")
+            appendLine("   ${firqohName(db, s.firqohId)} • Mu'allim: $muallim • Angk. ${s.angkatan.ifBlank { "-" }}")
             if (s.wali.isNotBlank() || s.hpWali.isNotBlank()) {
                 appendLine("   Wali: ${s.wali.ifBlank { "-" }} (${s.hpWali.ifBlank { "-" }})")
             }
@@ -323,12 +337,19 @@ object MmqaReportFormatters {
         filterLabel: String,
         santriList: List<SantriItem>
     ): String {
+        val distinctFirqohIds = santriList.map { it.firqohId }.filter { it.isNotBlank() }.distinct()
+        val headerMuallimPart = if (distinctFirqohIds.size == 1) {
+            " • Mu'allim: ${muallimNamesForFirqoh(db, distinctFirqohIds.first())}"
+        } else {
+            ""
+        }
         val rows = santriList.mapIndexed { idx, s ->
             listOf(
                 "${idx + 1}",
                 s.nis,
                 s.nama,
                 firqohName(db, s.firqohId),
+                muallimNamesForFirqoh(db, s.firqohId),
                 s.angkatan.ifBlank { "-" },
                 s.wali.ifBlank { "-" },
                 s.hpWali.ifBlank { "-" },
@@ -338,8 +359,8 @@ object MmqaReportFormatters {
         return wrapReportHtml(
             title = "Data Induk Santri",
             subtitle = "Master Data Santri Majelis",
-            metaLine = "Filter: $filterLabel • Total: ${santriList.size} Santri",
-            tableHeaders = listOf("No", "NIS", "Nama Santri", "Firqoh", "Angkatan", "Wali", "HP Wali", "Syahriah"),
+            metaLine = "Filter: $filterLabel$headerMuallimPart • Total: ${santriList.size} Santri",
+            tableHeaders = listOf("No", "NIS", "Nama Santri", "Firqoh", "Mu'allim", "Angkatan", "Wali", "HP Wali", "Syahriah"),
             rows = rows
         )
     }
