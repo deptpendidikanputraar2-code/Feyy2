@@ -3,6 +3,7 @@ package com.example.ui.components
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.print.PrintAttributes
 import android.print.PrintManager
 import android.util.Base64
@@ -562,9 +563,21 @@ fun EditProfileDialog(
                         Text(user.jabatan, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = Slate900)
                     }
                     StatusPill(
-                        text = if (user.role == "dewan_harian") "DEWAN HARIAN" else "MU'ALLIM",
-                        bgColor = if (user.role == "dewan_harian") Emerald100 else Amber100,
-                        textColor = if (user.role == "dewan_harian") Emerald900 else Amber900
+                        text = when (user.role) {
+                            "dewan_harian" -> "DEWAN HARIAN"
+                            "wali_santri" -> "WALI SANTRI"
+                            else -> "MU'ALLIM"
+                        },
+                        bgColor = when (user.role) {
+                            "dewan_harian" -> Emerald100
+                            "wali_santri" -> Sky100
+                            else -> Amber100
+                        },
+                        textColor = when (user.role) {
+                            "dewan_harian" -> Emerald900
+                            "wali_santri" -> Sky900
+                            else -> Amber900
+                        }
                     )
                 }
             }
@@ -1000,6 +1013,147 @@ fun shareTextToWhatsApp(context: Context, text: String, title: String = "Kirim k
             context.startActivity(Intent.createChooser(fallback, title))
         }.onFailure {
             Toast.makeText(context, "Tidak ada aplikasi untuk membagikan pesan.", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
+fun openWhatsAppDirect(
+    context: Context,
+    rawPhone: String,
+    text: String,
+    title: String = "Kirim ke WhatsApp"
+) {
+    val waPhone = com.example.data.MmqaConstants.normalizeIndoPhoneForWa(rawPhone)
+    if (waPhone.isBlank()) {
+        shareTextToWhatsApp(context, text, title)
+        return
+    }
+    val url = "https://wa.me/$waPhone?text=${Uri.encode(text)}"
+    val pm = context.packageManager
+    val waPackages = listOf("com.whatsapp", "com.whatsapp.w4b")
+    val targetPackage = waPackages.firstOrNull { pkg ->
+        runCatching { pm.getPackageInfo(pkg, 0) }.isSuccess
+    }
+    val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+        if (targetPackage != null) setPackage(targetPackage)
+    }
+    runCatching {
+        context.startActivity(viewIntent)
+    }.onFailure {
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }.onFailure {
+            shareTextToWhatsApp(context, text, title)
+        }
+    }
+}
+
+@Composable
+fun PeriodFilterBar(
+    selectedPeriod: String,
+    referenceDate: String,
+    onSelectPeriod: (String) -> Unit,
+    onShiftDate: (Int) -> Unit,
+    onResetToday: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val rangeLabel = remember(selectedPeriod, referenceDate) {
+        com.example.data.AttendancePeriodHelper.getPeriodRangeLabel(selectedPeriod, referenceDate)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = modifier.fillMaxWidth()) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+        ) {
+            com.example.data.AttendancePeriodHelper.PERIOD_OPTIONS.forEach { (key, label) ->
+                val active = selectedPeriod == key
+                Surface(
+                    color = if (active) Emerald900 else Slate100,
+                    border = BorderStroke(1.dp, if (active) Emerald900 else Slate200),
+                    shape = RoundedCornerShape(999.dp),
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 36.dp)
+                        .testTag("period_filter_${key.lowercase()}")
+                        .clickable { onSelectPeriod(key) }
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)) {
+                        Text(
+                            text = label,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = if (active) Amber300 else Slate700
+                        )
+                    }
+                }
+            }
+        }
+        Surface(
+            color = Emerald50.copy(alpha = 0.7f),
+            border = BorderStroke(1.dp, Emerald100),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                if (selectedPeriod != "ALL") {
+                    Surface(
+                        color = Color.White,
+                        border = BorderStroke(1.dp, Slate200),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .defaultMinSize(minWidth = 34.dp, minHeight = 32.dp)
+                            .clickable { onShiftDate(-1) }
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
+                            Text("◀", fontSize = 11.sp, fontWeight = FontWeight.Black, color = Emerald900)
+                        }
+                    }
+                }
+                Text(
+                    text = "📅 $rangeLabel",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Emerald900,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                )
+                if (selectedPeriod != "ALL") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            color = Amber100,
+                            border = BorderStroke(1.dp, Amber300),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 32.dp)
+                                .clickable { onResetToday() }
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
+                                Text("Hari Ini", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Amber950)
+                            }
+                        }
+                        Surface(
+                            color = Color.White,
+                            border = BorderStroke(1.dp, Slate200),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .defaultMinSize(minWidth = 34.dp, minHeight = 32.dp)
+                                .clickable { onShiftDate(1) }
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
+                                Text("▶", fontSize = 11.sp, fontWeight = FontWeight.Black, color = Emerald900)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

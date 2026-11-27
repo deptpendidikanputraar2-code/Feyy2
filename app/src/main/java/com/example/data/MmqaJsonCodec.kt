@@ -194,6 +194,7 @@ object MmqaJsonCodec {
         put("role", u.role)
         put("jabatan", u.jabatan)
         put("firqohId", u.firqohId)
+        put("santriId", u.santriId)
         put("failedAttempts", u.failedAttempts)
         if (u.lockedUntil != null) put("lockedUntil", u.lockedUntil) else put("lockedUntil", JSONObject.NULL)
         put("passwordUpdatedAt", u.passwordUpdatedAt)
@@ -211,6 +212,7 @@ object MmqaJsonCodec {
         role = o.optString("role", "muallim"),
         jabatan = o.optString("jabatan"),
         firqohId = o.optString("firqohId"),
+        santriId = o.optString("santriId", ""),
         failedAttempts = o.optInt("failedAttempts", 0),
         lockedUntil = if (o.isNull("lockedUntil")) null else o.optLong("lockedUntil"),
         passwordUpdatedAt = o.optString("passwordUpdatedAt"),
@@ -305,6 +307,12 @@ object MmqaJsonCodec {
         put("firqohId", a.firqohId)
         put("status", a.status)
         put("catatan", a.catatan)
+        put("waktuScan", a.waktuScan)
+        put("metode", a.metode)
+        put("terlambat", a.terlambat)
+        put("menitTelat", a.menitTelat)
+        put("batasWaktu", a.batasWaktu)
+        put("petugasScan", a.petugasScan)
     }
 
     private fun decodeAbsensi(o: JSONObject) = AbsensiRecord(
@@ -315,7 +323,13 @@ object MmqaJsonCodec {
         targetId = o.optString("targetId"),
         firqohId = o.optString("firqohId"),
         status = o.optString("status"),
-        catatan = o.optString("catatan")
+        catatan = o.optString("catatan"),
+        waktuScan = o.optString("waktuScan"),
+        metode = o.optString("metode"),
+        terlambat = o.optBoolean("terlambat", false),
+        menitTelat = o.optInt("menitTelat", 0),
+        batasWaktu = o.optString("batasWaktu"),
+        petugasScan = o.optString("petugasScan")
     )
 
     private fun encodeMateri(m: MateriItem) = JSONObject().apply {
@@ -778,6 +792,10 @@ object MmqaJsonCodec {
             put("muallimCanManageDataInduk", cfg.permissions.muallimCanManageDataInduk)
             put("allowDeleteRecords", cfg.permissions.allowDeleteRecords)
             put("syahriahNominal", cfg.permissions.syahriahNominal)
+            put("batasTelatPagi", cfg.permissions.batasTelatPagi)
+            put("batasTelatSore", cfg.permissions.batasTelatSore)
+            put("batasTelatMalam", cfg.permissions.batasTelatMalam)
+            put("batasTelatEvent", cfg.permissions.batasTelatEvent)
         })
         put("passwordRule", JSONObject().apply {
             put("minLength", cfg.passwordRule.minLength)
@@ -857,7 +875,11 @@ object MmqaJsonCodec {
                 muallimCanManageInventaris = permObj.optBoolean("muallimCanManageInventaris", false),
                 muallimCanManageDataInduk = permObj.optBoolean("muallimCanManageDataInduk", false),
                 allowDeleteRecords = permObj.optBoolean("allowDeleteRecords", true),
-                syahriahNominal = permObj.optLong("syahriahNominal", 150000L)
+                syahriahNominal = permObj.optLong("syahriahNominal", 150000L),
+                batasTelatPagi = permObj.optString("batasTelatPagi", "05:30").ifBlank { "05:30" },
+                batasTelatSore = permObj.optString("batasTelatSore", "16:00").ifBlank { "16:00" },
+                batasTelatMalam = permObj.optString("batasTelatMalam", "19:30").ifBlank { "19:30" },
+                batasTelatEvent = permObj.optString("batasTelatEvent", "08:00").ifBlank { "08:00" }
             )
         } else fallback.permissions
 

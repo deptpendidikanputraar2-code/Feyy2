@@ -2,6 +2,7 @@ package com.example.data
 
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -46,6 +47,23 @@ object MmqaConstants {
         "C" -> "Kode C — Instruksi"
         else -> "Kode $kode"
     }
+
+    fun normalizeIndoPhoneForWa(rawPhone: String): String {
+        val digits = rawPhone.filter { it.isDigit() }
+        if (digits.length < 8) return ""
+        return when {
+            digits.startsWith("62") -> digits
+            digits.startsWith("0") -> "62" + digits.drop(1)
+            digits.startsWith("8") -> "62$digits"
+            else -> digits
+        }
+    }
+
+    fun matchesRoleAccess(allowedRole: String, userRole: String): Boolean = when (allowedRole) {
+        "all" -> true
+        "pengurus" -> userRole == "dewan_harian" || userRole == "muallim"
+        else -> allowedRole == userRole
+    }
 }
 
 data class UserAccount(
@@ -53,7 +71,7 @@ data class UserAccount(
     val username: String,
     val password: String,
     val name: String,
-    val role: String, // "dewan_harian" | "muallim"
+    val role: String, // "dewan_harian" | "muallim" | "wali_santri"
     val jabatan: String,
     val firqohId: String = "",
     val failedAttempts: Int = 0,
@@ -62,7 +80,8 @@ data class UserAccount(
     val avatarBase64: String = "",
     val deniedMenus: List<String> = emptyList(),
     val deniedSubmenus: List<String> = emptyList(),
-    val deniedAnakSub: List<String> = emptyList()
+    val deniedAnakSub: List<String> = emptyList(),
+    val santriId: String = ""
 )
 
 data class FirqohItem(
@@ -423,8 +442,193 @@ data class AbsensiRecord(
     val targetId: String,
     val firqohId: String = "",
     val status: String, // "Hadir" | "Izin" | "Sakit" | "Alpha"
-    val catatan: String = ""
+    val catatan: String = "",
+    val waktuScan: String = "",
+    val metode: String = "", // "Scan QR/Barcode" | "Input Manual" | ""
+    val terlambat: Boolean = false,
+    val menitTelat: Int = 0,
+    val batasWaktu: String = "",
+    val petugasScan: String = ""
 )
+
+data class ScanTimingResult(
+    val waktuScan: String,
+    val batasWaktu: String,
+    val terlambat: Boolean,
+    val menitTelat: Int
+)
+
+object AttendanceTimeEvaluator {
+    fun defaultCutoffForSession(
+        sesi: String,
+        jadwalList: List<JadwalItem>,
+        permissions: AdminPermissions = AdminPermissions()
+    ): String {
+        when (sesi.trim().lowercase()) {
+            "pagi" -> if (parseMinutesOfDay(permissions.batasTelatPagi) != null) {
+                return permissions.batasTelatPagi.trim().replace(".", ":")
+            }
+            "sore" -> if (parseMinutesOfDay(permissions.batasTelatSore) != null) {
+                return permissions.batasTelatSore.trim().replace(".", ":")
+            }
+            "malam" -> if (parseMinutesOfDay(permissions.batasTelatMalam) != null) {
+                return permissions.batasTelatMalam.trim().replace(".", ":")
+            }
+        }
+        val cleanEvent = sesi.removePrefix("Event:").removePrefix("event:").trim()
+        val matchedJadwal = jadwalList.firstOrNull { j ->
+            j.judul.equals(cleanEvent, ignoreCase = true) ||
+                (cleanEvent.isNotBlank() && j.judul.contains(cleanEvent, ignoreCase = true))
+        }
+        if (matchedJadwal != null && parseMinutesOfDay(matchedJadwal.jamMulai) != null) {
+            return matchedJadwal.jamMulai.trim().replace(".", ":")
+        }
+        return when (sesi.trim().lowercase()) {
+            "pagi" -> "05:30"
+            "sore" -> "16:00"
+            "malam" -> "19:30"
+            else -> permissions.batasTelatEvent.takeIf { parseMinutesOfDay(it) != null }?.trim()?.replace(".", ":") ?: "08:00"
+        }
+    }
+
+    fun parseMinutesOfDay(timeStr: String): Int? {
+        val clean = timeStr.trim().replace(".", ":")
+        val parts = clean.split(":")
+        if (parts.size < 2) return null
+        val h = parts[0].toIntOrNull() ?: return null
+        val m = parts[1].take(2).toIntOrNull() ?: return null
+        if (h !in 0..23 || m !in 0..59) return null
+        return h * 60 + m
+    }
+
+    fun evaluateScanTiming(scanTimeHms: String, cutoffTimeHm: String, status: String): ScanTimingResult {
+        val normalizedScan = scanTimeHms.ifBlank { MmqaConstants.nowTimeHms() }
+        val normalizedCutoff = cutoffTimeHm.trim().replace(".", ":")
+        val scanMin = parseMinutesOfDay(normalizedScan)
+        val cutoffMin = parseMinutesOfDay(normalizedCutoff)
+        val isLate = status == "Hadir" && scanMin != null && cutoffMin != null && scanMin > cutoffMin
+        val lateMinutes = if (isLate && scanMin != null && cutoffMin != null) (scanMin - cutoffMin) else 0
+        return ScanTimingResult(
+            waktuScan = normalizedScan,
+            batasWaktu = if (cutoffMin != null) normalizedCutoff else "",
+            terlambat = isLate,
+            menitTelat = lateMinutes
+        )
+    }
+}
+
+object AttendancePeriodHelper {
+    val PERIOD_OPTIONS = listOf(
+        "ALL" to "Semua",
+        "HARIAN" to "Harian",
+        "MINGGUAN" to "Mingguan",
+        "BULANAN" to "Bulanan",
+        "SEMESTER" to "Persemester",
+        "TAHUNAN" to "Pertahun"
+    )
+
+    private val bulanNama = listOf(
+        "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+    )
+
+    private fun parseYmd(dateStr: String): Calendar {
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { isLenient = false }
+        val cal = Calendar.getInstance(Locale.US)
+        cal.firstDayOfWeek = Calendar.MONDAY
+        val parsed = runCatching { sdf.parse(dateStr.trim()) }.getOrNull()
+        if (parsed != null) {
+            cal.time = parsed
+        }
+        return cal
+    }
+
+    private fun formatYmd(cal: Calendar): String =
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+
+    fun getPeriodBounds(period: String, refDate: String): Pair<String, String>? {
+        val p = period.uppercase()
+        if (p == "ALL" || p.isBlank()) return null
+        val cal = parseYmd(refDate)
+        return when (p) {
+            "HARIAN" -> {
+                val d = formatYmd(cal)
+                d to d
+            }
+            "MINGGUAN" -> {
+                val startCal = cal.clone() as Calendar
+                startCal.firstDayOfWeek = Calendar.MONDAY
+                while (startCal.get(Calendar.DAY_OF_WEEK) != Calendar.MONDAY) {
+                    startCal.add(Calendar.DAY_OF_MONTH, -1)
+                }
+                val endCal = startCal.clone() as Calendar
+                endCal.add(Calendar.DAY_OF_MONTH, 6)
+                formatYmd(startCal) to formatYmd(endCal)
+            }
+            "BULANAN" -> {
+                val startCal = (cal.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, 1) }
+                val endCal = (cal.clone() as Calendar).apply {
+                    set(Calendar.DAY_OF_MONTH, getActualMaximum(Calendar.DAY_OF_MONTH))
+                }
+                formatYmd(startCal) to formatYmd(endCal)
+            }
+            "SEMESTER" -> {
+                val year = cal.get(Calendar.YEAR)
+                val month = cal.get(Calendar.MONTH) // 0-based
+                if (month <= Calendar.JUNE) {
+                    String.format(Locale.US, "%04d-01-01", year) to String.format(Locale.US, "%04d-06-30", year)
+                } else {
+                    String.format(Locale.US, "%04d-07-01", year) to String.format(Locale.US, "%04d-12-31", year)
+                }
+            }
+            "TAHUNAN" -> {
+                val year = cal.get(Calendar.YEAR)
+                String.format(Locale.US, "%04d-01-01", year) to String.format(Locale.US, "%04d-12-31", year)
+            }
+            else -> null
+        }
+    }
+
+    fun matchesPeriod(recordDate: String, period: String, refDate: String): Boolean {
+        val bounds = getPeriodBounds(period, refDate) ?: return true
+        val clean = recordDate.trim().take(10)
+        if (clean.length != 10) return false
+        return clean >= bounds.first && clean <= bounds.second
+    }
+
+    fun shiftReferenceDate(period: String, refDate: String, delta: Int): String {
+        val p = period.uppercase()
+        if (p == "ALL" || delta == 0) return refDate
+        val cal = parseYmd(refDate)
+        when (p) {
+            "HARIAN" -> cal.add(Calendar.DAY_OF_MONTH, delta)
+            "MINGGUAN" -> cal.add(Calendar.WEEK_OF_YEAR, delta)
+            "BULANAN" -> cal.add(Calendar.MONTH, delta)
+            "SEMESTER" -> cal.add(Calendar.MONTH, delta * 6)
+            "TAHUNAN" -> cal.add(Calendar.YEAR, delta)
+        }
+        return formatYmd(cal)
+    }
+
+    fun getPeriodRangeLabel(period: String, refDate: String): String {
+        val p = period.uppercase()
+        val cal = parseYmd(refDate)
+        val year = cal.get(Calendar.YEAR)
+        val month = cal.get(Calendar.MONTH)
+        val bounds = getPeriodBounds(p, refDate)
+        return when (p) {
+            "HARIAN" -> "Harian • ${bounds?.first ?: refDate}"
+            "MINGGUAN" -> "Mingguan • ${bounds?.first} s/d ${bounds?.second}"
+            "BULANAN" -> "Bulanan • ${bulanNama.getOrElse(month) { "" }} $year"
+            "SEMESTER" -> {
+                val semName = if (month <= Calendar.JUNE) "Genap (Jan–Jun)" else "Ganjil (Jul–Des)"
+                "Semester $semName $year"
+            }
+            "TAHUNAN" -> "Tahunan • Tahun $year"
+            else -> "Semua Waktu (Akumulasi)"
+        }
+    }
+}
 
 data class MateriItem(
     val id: String,
@@ -619,7 +823,11 @@ data class AdminPermissions(
     val muallimCanManageInventaris: Boolean = false,
     val muallimCanManageDataInduk: Boolean = false,
     val allowDeleteRecords: Boolean = true,
-    val syahriahNominal: Long = 150000L
+    val syahriahNominal: Long = 150000L,
+    val batasTelatPagi: String = "05:30",
+    val batasTelatSore: String = "16:00",
+    val batasTelatMalam: String = "19:30",
+    val batasTelatEvent: String = "08:00"
 )
 
 data class PasswordRule(
@@ -676,11 +884,16 @@ data class PendingMutation(
 object MmqaDefaults {
     fun defaultAnakSub(): List<AnakSubConfigItem> = listOf(
         // Dashboard
+        AnakSubConfigItem("dashboard_santri_rekap_view", "dashboard", "rekapan", "Tampilkan Rekapan Absensi Santri & Firqoh di Dashboard", "all", true),
+        AnakSubConfigItem("dashboard_muallim_rekap_view", "dashboard", "rekapan", "Tampilkan Rekapan Absensi Mu'allim di Dashboard", "pengurus", true),
+        AnakSubConfigItem("dashboard_dewan_rekap_view", "dashboard", "rekapan", "Tampilkan Rekapan Absensi Dewan Harian di Dashboard", "pengurus", true),
+        AnakSubConfigItem("dashboard_bermasalah_view", "dashboard", "rekapan", "Tampilkan Rekap Santri Bermasalah (Juknis) di Dashboard", "pengurus", true),
+        AnakSubConfigItem("dashboard_wa_controlling", "dashboard", "rekapan", "Tampilkan Panel Kontrol WA Otomatis di Dashboard", "pengurus", true),
         AnakSubConfigItem("dashboard_keuangan_view", "dashboard", "keuangan", "Tampilkan Kartu & Rekap Keuangan di Dashboard", "dewan_harian", true),
         // Absensi
-        AnakSubConfigItem("absensi_santri_edit", "absensi", "santri", "Input & Ubah Status Presensi Santri", "all", true),
-        AnakSubConfigItem("absensi_santri_mark_all", "absensi", "santri", "Tombol Semua Hadir Santri", "all", true),
-        AnakSubConfigItem("absensi_barcode_scan", "absensi", "santri", "Scan Barcode & Cetak Kartu Barcode Absensi", "all", true),
+        AnakSubConfigItem("absensi_santri_edit", "absensi", "santri", "Input & Ubah Status Presensi Santri", "pengurus", true),
+        AnakSubConfigItem("absensi_santri_mark_all", "absensi", "santri", "Tombol Semua Hadir Santri", "pengurus", true),
+        AnakSubConfigItem("absensi_barcode_scan", "absensi", "santri", "Scan Barcode & Cetak Kartu Barcode Absensi", "pengurus", true),
         AnakSubConfigItem("absensi_pengurus_edit", "absensi", "muallim", "Input Presensi Mu'allim & Dewan Harian", "dewan_harian", true),
         // Materi
         AnakSubConfigItem("materi_manage", "materi", "utama", "Tambah & Edit Materi Perfirqoh", "all", true),
@@ -748,8 +961,8 @@ object MmqaDefaults {
         submenus = SubmenuGroups(
             absensi = listOf(
                 SubmenuConfigItem("santri", "Absensi Santri Perfirqoh", true, "all"),
-                SubmenuConfigItem("muallim", "Absensi Mu'allim", true, "all"),
-                SubmenuConfigItem("dewan_harian", "Absensi Dewan Harian", true, "all")
+                SubmenuConfigItem("muallim", "Absensi Mu'allim", true, "pengurus"),
+                SubmenuConfigItem("dewan_harian", "Absensi Dewan Harian", true, "pengurus")
             ),
             ujian = listOf(
                 SubmenuConfigItem("peserta", "1. Peserta Ujian (Data Induk)", true, "all"),

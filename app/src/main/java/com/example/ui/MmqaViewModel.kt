@@ -25,15 +25,28 @@ data class ToastMessage(
     val isError: Boolean = false
 )
 
+data class DetailedAbsensiLogUi(
+    val record: AbsensiRecord,
+    val nama: String,
+    val nomorIdentitas: String,
+    val firqohName: String,
+    val kontakWa: String,
+    val waliOrBidang: String
+)
+
 data class MmqaUiState(
     val currentUser: UserAccount? = null,
     val activeMenu: String = "dashboard",
     val loginError: String? = null,
     val dashFirqohFilter: String = "ALL",
+    val dashPeriodeFilter: String = "ALL",
+    val dashPeriodeRefDate: String = MmqaConstants.todayStr(),
     val absensiTab: String = "santri",
     val absensiTanggal: String = MmqaConstants.todayStr(),
     val absensiSesi: String = "Pagi",
     val absensiFirqoh: String = "FRQ-1",
+    val absensiRekapPeriode: String = "HARIAN",
+    val absensiRekapRefDate: String = MmqaConstants.todayStr(),
     val materiFirqoh: String = "ALL",
     val ujianTab: String = "peserta",
     val ujianFirqoh: String = "ALL",
@@ -225,11 +238,20 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             _securitySettings.value = updatedSec
         }
         _uiState.update { state ->
+            val resolvedFirqoh = when (user.role) {
+                "wali_santri" -> user.firqohId.ifBlank {
+                    database.value.santri.firstOrNull { it.id == user.santriId }?.firqohId ?: "ALL"
+                }
+                "muallim" -> if (user.firqohId.isNotBlank()) user.firqohId else state.absensiFirqoh
+                else -> "ALL"
+            }
             state.copy(
                 currentUser = user,
                 loginError = null,
                 activeMenu = "dashboard",
-                absensiFirqoh = if (user.role == "muallim" && user.firqohId.isNotBlank()) user.firqohId else state.absensiFirqoh
+                dashFirqohFilter = if (user.role == "wali_santri") resolvedFirqoh else "ALL",
+                absensiTab = if (user.role == "wali_santri") "santri" else state.absensiTab,
+                absensiFirqoh = resolvedFirqoh
             )
         }
         showToast("Selamat datang, ${user.name}")
@@ -288,7 +310,7 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
     // 3-LEVEL ACCESS CONTROL (MENU -> SUBMENU -> ANAK SUB + PER-USER OVERRIDES)
     // =========================================================================
     private fun matchesRole(allowedRole: String, userRole: String): Boolean {
-        return allowedRole == "all" || allowedRole == userRole
+        return MmqaConstants.matchesRoleAccess(allowedRole, userRole)
     }
 
     fun getAccessibleMenus(): List<MenuConfigItem> {
@@ -388,6 +410,121 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         return AttendanceStats(hadir, izin, sakit, alpha, total, pct)
     }
 
+    fun calcAttendanceStatsByPeriod(
+        tipe: String,
+        targetId: String? = null,
+        firqohId: String? = null,
+        periodFilter: String = "ALL",
+        referenceDate: String = MmqaConstants.todayStr()
+    ): AttendanceStats {
+        if (periodFilter == "ALL" || periodFilter.isBlank()) {
+            return calcAttendanceStats(tipe, targetId, firqohId)
+        }
+        var logs = database.value.absensi.filter {
+            it.tipe == tipe && AttendancePeriodHelper.matchesPeriod(it.tanggal, periodFilter, referenceDate)
+        }
+        if (targetId != null) logs = logs.filter { it.targetId == targetId }
+        if (firqohId != null && firqohId != "ALL") {
+            logs = logs.filter { matchesFirqohFilter(it.firqohId, firqohId) }
+        }
+        val hadir = logs.count { it.status == "Hadir" }
+        val izin = logs.count { it.status == "Izin" }
+        val sakit = logs.count { it.status == "Sakit" }
+        val alpha = logs.count { it.status == "Alpha" }
+        val total = logs.size
+        val pct = if (total > 0) kotlin.math.round((hadir.toDouble() / total) * 100.0).toInt() else 0
+        return AttendanceStats(hadir, izin, sakit, alpha, total, pct)
+    }
+
+    fun countLateAttendance(
+        tipe: String,
+        targetId: String? = null,
+        firqohId: String? = null,
+        periodFilter: String = "ALL",
+        referenceDate: String = MmqaConstants.todayStr()
+    ): Int {
+        var logs = database.value.absensi.filter {
+            it.tipe == tipe && it.terlambat && it.status == "Hadir"
+        }
+        if (periodFilter != "ALL" && periodFilter.isNotBlank()) {
+            logs = logs.filter { AttendancePeriodHelper.matchesPeriod(it.tanggal, periodFilter, referenceDate) }
+        }
+        if (targetId != null) logs = logs.filter { it.targetId == targetId }
+        if (firqohId != null && firqohId != "ALL") {
+            logs = logs.filter { matchesFirqohFilter(it.firqohId, firqohId) }
+        }
+        return logs.size
+    }
+
+    fun getDetailedAbsensiLogs(
+        tipe: String,
+        firqohFilter: String = "ALL",
+        periodFilter: String = "HARIAN",
+        referenceDate: String = MmqaConstants.todayStr(),
+        onlyLate: Boolean = false
+    ): List<DetailedAbsensiLogUi> {
+        val db = database.value
+        val santriMap = db.santri.associateBy { it.id }
+        val muallimMap = db.muallim.associateBy { it.id }
+        val dewanMap = db.dewanHarian.associateBy { it.id }
+
+        return db.absensi
+            .asSequence()
+            .filter { it.tipe == tipe }
+            .filter { AttendancePeriodHelper.matchesPeriod(it.tanggal, periodFilter, referenceDate) }
+            .filter { rec ->
+                if (tipe == "santri" && firqohFilter != "ALL") {
+                    matchesFirqohFilter(rec.firqohId, firqohFilter)
+                } else {
+                    true
+                }
+            }
+            .filter { !onlyLate || (it.terlambat && it.status == "Hadir") }
+            .map { rec ->
+                when (tipe) {
+                    "santri" -> {
+                        val s = santriMap[rec.targetId]
+                        DetailedAbsensiLogUi(
+                            record = rec,
+                            nama = s?.nama ?: rec.targetId,
+                            nomorIdentitas = s?.nis?.let { "NIS $it" } ?: rec.targetId,
+                            firqohName = getFirqohName(s?.firqohId ?: rec.firqohId),
+                            kontakWa = s?.hpWali ?: "",
+                            waliOrBidang = s?.wali?.let { "Wali: $it" } ?: ""
+                        )
+                    }
+                    "muallim" -> {
+                        val m = muallimMap[rec.targetId]
+                        DetailedAbsensiLogUi(
+                            record = rec,
+                            nama = m?.nama ?: rec.targetId,
+                            nomorIdentitas = m?.niy?.let { "NIY $it" } ?: rec.targetId,
+                            firqohName = getFirqohName(m?.firqohId ?: rec.firqohId),
+                            kontakWa = m?.hp ?: "",
+                            waliOrBidang = m?.bidang ?: ""
+                        )
+                    }
+                    else -> {
+                        val d = dewanMap[rec.targetId]
+                        DetailedAbsensiLogUi(
+                            record = rec,
+                            nama = d?.nama ?: rec.targetId,
+                            nomorIdentitas = d?.kode?.let { "Kode $it" } ?: rec.targetId,
+                            firqohName = "Dewan Harian MMQA",
+                            kontakWa = d?.hp ?: "",
+                            waliOrBidang = d?.jabatan ?: ""
+                        )
+                    }
+                }
+            }
+            .sortedWith(
+                compareByDescending<DetailedAbsensiLogUi> { it.record.tanggal }
+                    .thenByDescending { it.record.waktuScan }
+                    .thenBy { it.nama }
+            )
+            .toList()
+    }
+
     // =========================================================================
     // ABSENSI ACTIONS
     // =========================================================================
@@ -398,26 +535,90 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setAbsensiStatus(tipe: String, targetId: String, firqohId: String, status: String) {
+    fun setAbsensiStatus(
+        tipe: String,
+        targetId: String,
+        firqohId: String,
+        status: String,
+        customCutoffHm: String? = null
+    ) {
         val st = _uiState.value
+        val dbSnapshot = database.value
         val existing = getAbsensiRecord(tipe, targetId)
         val recId = existing?.id ?: "ABS-${System.currentTimeMillis()}-${(100..999).random()}"
-        val updatedRec = existing?.copy(status = status) ?: AbsensiRecord(
-            id = recId,
-            tanggal = st.absensiTanggal,
-            sesi = st.absensiSesi,
-            tipe = tipe,
-            targetId = targetId,
-            firqohId = firqohId,
-            status = status,
-            catatan = ""
-        )
+        val actor = st.currentUser?.name ?: "Pengurus MMQA"
+        val nowHms = MmqaConstants.nowTimeHms()
+        val cutoffHm = customCutoffHm?.takeIf { AttendanceTimeEvaluator.parseMinutesOfDay(it) != null }
+            ?.trim()?.replace(".", ":")
+            ?: AttendanceTimeEvaluator.defaultCutoffForSession(st.absensiSesi, dbSnapshot.jadwal, dbSnapshot.adminConfig.permissions)
+        val isToday = st.absensiTanggal == MmqaConstants.todayStr()
+        val timing = if (status == "Hadir" && isToday) {
+            AttendanceTimeEvaluator.evaluateScanTiming(nowHms, cutoffHm, "Hadir")
+        } else {
+            ScanTimingResult(waktuScan = nowHms, batasWaktu = cutoffHm, terlambat = false, menitTelat = 0)
+        }
+
+        val updatedRec = if (existing != null) {
+            val useExistingTiming = status == "Hadir" && existing.status == "Hadir" && existing.waktuScan.isNotBlank()
+            existing.copy(
+                status = status,
+                waktuScan = if (useExistingTiming) existing.waktuScan else timing.waktuScan,
+                metode = existing.metode.ifBlank { "Input Manual" },
+                terlambat = when {
+                    status != "Hadir" -> false
+                    useExistingTiming -> existing.terlambat
+                    else -> timing.terlambat
+                },
+                menitTelat = when {
+                    status != "Hadir" -> 0
+                    useExistingTiming -> existing.menitTelat
+                    else -> timing.menitTelat
+                },
+                batasWaktu = if (useExistingTiming && existing.batasWaktu.isNotBlank()) existing.batasWaktu else cutoffHm,
+                petugasScan = existing.petugasScan.ifBlank { actor }
+            )
+        } else {
+            AbsensiRecord(
+                id = recId,
+                tanggal = st.absensiTanggal,
+                sesi = st.absensiSesi,
+                tipe = tipe,
+                targetId = targetId,
+                firqohId = firqohId,
+                status = status,
+                catatan = "",
+                waktuScan = timing.waktuScan,
+                metode = "Input Manual",
+                terlambat = timing.terlambat,
+                menitTelat = timing.menitTelat,
+                batasWaktu = timing.batasWaktu,
+                petugasScan = actor
+            )
+        }
         repository.mutate(listOf(PendingMutation("absensi", recId, "upsert"))) { db ->
             val list = db.absensi.toMutableList()
             val idx = list.indexOfFirst { it.id == recId }
             if (idx >= 0) list[idx] = updatedRec else list.add(updatedRec)
             db.copy(absensi = list)
         }
+    }
+
+    fun saveSessionCutoff(sesi: String, cutoffHm: String): Boolean {
+        val clean = cutoffHm.trim().replace(".", ":")
+        if (AttendanceTimeEvaluator.parseMinutesOfDay(clean) == null) {
+            showToast("Format jam batas telat harus HH:mm (contoh: 05:30)!", isError = true)
+            return false
+        }
+        updateAdminPermissions { perm ->
+            when (sesi.trim().lowercase()) {
+                "pagi" -> perm.copy(batasTelatPagi = clean)
+                "sore" -> perm.copy(batasTelatSore = clean)
+                "malam" -> perm.copy(batasTelatMalam = clean)
+                else -> perm.copy(batasTelatEvent = clean)
+            }
+        }
+        showToast("Batas jam telat untuk \"$sesi\" disimpan ($clean WIB)!")
+        return true
     }
 
     fun setAbsensiCatatan(tipe: String, targetId: String, firqohId: String, catatan: String) {
@@ -1123,7 +1324,11 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             channelId = st.chatChannel,
             senderId = curUser?.id ?: "USR-01",
             senderName = curUser?.name ?: "Pengguna",
-            senderRole = if (curUser?.role == "dewan_harian") "Dewan Harian MMQA" else (curUser?.jabatan ?: "Mu'allim"),
+            senderRole = when (curUser?.role) {
+                "dewan_harian" -> "Dewan Harian MMQA"
+                "wali_santri" -> "Wali Santri"
+                else -> curUser?.jabatan ?: "Mu'allim"
+            },
             text = clean,
             time = MmqaConstants.nowTimeHm(),
             replyTo = st.chatReplyTo,
@@ -1374,7 +1579,8 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         name: String,
         jabatan: String,
         role: String,
-        firqohId: String
+        firqohId: String,
+        santriId: String = ""
     ): Boolean {
         val ruleErr = validatePasswordAgainstRule(password)
         if (ruleErr != null) {
@@ -1391,6 +1597,12 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         }
         val itemId = userId?.takeIf { it.isNotBlank() } ?: "USR-${System.currentTimeMillis()}"
         val existing = database.value.users.firstOrNull { it.id == itemId }
+        val resolvedSantriId = if (role == "wali_santri") santriId.trim() else ""
+        val resolvedFirqohId = if (role == "wali_santri" && firqohId.isBlank() && resolvedSantriId.isNotBlank()) {
+            database.value.santri.firstOrNull { it.id == resolvedSantriId }?.firqohId ?: ""
+        } else {
+            firqohId
+        }
         val user = UserAccount(
             id = itemId,
             username = cleanUsername,
@@ -1398,7 +1610,8 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             name = name.trim(),
             role = role,
             jabatan = jabatan.trim(),
-            firqohId = firqohId,
+            firqohId = resolvedFirqohId,
+            santriId = resolvedSantriId,
             failedAttempts = 0,
             lockedUntil = null,
             passwordUpdatedAt = MmqaConstants.todayStr(),
@@ -1526,13 +1739,39 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         targetId: String,
         firqohId: String,
         nama: String,
-        status: String
-    ) {
+        status: String,
+        customCutoffHm: String? = null
+    ): ScanTimingResult {
         val st = _uiState.value
+        val dbSnapshot = database.value
         val existing = getAbsensiRecord(tipe, targetId)
         val recId = existing?.id ?: "ABS-${System.currentTimeMillis()}-${(100..999).random()}"
-        val scanNote = "Scan Barcode (${MmqaConstants.nowTimeHm()})"
-        val updatedRec = existing?.copy(status = status, catatan = scanNote) ?: AbsensiRecord(
+        val nowHms = MmqaConstants.nowTimeHms()
+        val cutoffHm = customCutoffHm?.takeIf { AttendanceTimeEvaluator.parseMinutesOfDay(it) != null }
+            ?.trim()?.replace(".", ":")
+            ?: AttendanceTimeEvaluator.defaultCutoffForSession(st.absensiSesi, dbSnapshot.jadwal, dbSnapshot.adminConfig.permissions)
+        val timing = AttendanceTimeEvaluator.evaluateScanTiming(nowHms, cutoffHm, status)
+        val actor = st.currentUser?.name ?: "Petugas Piket"
+        val firqohDisplay = if (firqohId.isNotBlank()) getFirqohName(firqohId) else "Dewan Harian"
+        val timingNote = if (timing.terlambat) {
+            "Terlambat +${timing.menitTelat} mnt (Batas ${timing.batasWaktu})"
+        } else if (status == "Hadir" && timing.batasWaktu.isNotBlank()) {
+            "Tepat Waktu (Batas ${timing.batasWaktu})"
+        } else {
+            status
+        }
+        val scanNote = "Scan QR/Barcode pukul $nowHms WIB • $timingNote • Petugas: $actor"
+
+        val updatedRec = existing?.copy(
+            status = status,
+            catatan = scanNote,
+            waktuScan = timing.waktuScan,
+            metode = "Scan QR/Barcode",
+            terlambat = timing.terlambat,
+            menitTelat = timing.menitTelat,
+            batasWaktu = timing.batasWaktu,
+            petugasScan = actor
+        ) ?: AbsensiRecord(
             id = recId,
             tanggal = st.absensiTanggal,
             sesi = st.absensiSesi,
@@ -1540,7 +1779,13 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             targetId = targetId,
             firqohId = firqohId,
             status = status,
-            catatan = scanNote
+            catatan = scanNote,
+            waktuScan = timing.waktuScan,
+            metode = "Scan QR/Barcode",
+            terlambat = timing.terlambat,
+            menitTelat = timing.menitTelat,
+            batasWaktu = timing.batasWaktu,
+            petugasScan = actor
         )
         repository.mutate(listOf(PendingMutation("absensi", recId, "upsert"))) { db ->
             val list = db.absensi.toMutableList()
@@ -1548,7 +1793,36 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             if (idx >= 0) list[idx] = updatedRec else list.add(updatedRec)
             db.copy(absensi = list)
         }
-        showToast("✅ Barcode: $nama dicatat $status (${st.absensiSesi})")
+
+        val roleTag = when (tipe) {
+            "santri" -> "Santri"
+            "muallim" -> "Mu'allim"
+            else -> "Dewan"
+        }
+        val notifTitle = if (timing.terlambat) {
+            "⏰ [$roleTag] $nama TERLAMBAT (+${timing.menitTelat} mnt)"
+        } else {
+            "✅ [$roleTag] $nama ($status)"
+        }
+        val notifBody = "$firqohDisplay • Sesi ${st.absensiSesi} • Pukul $nowHms WIB" +
+            if (timing.batasWaktu.isNotBlank()) " (Batas ${timing.batasWaktu})" else ""
+        val perPersonNotifId = ("SCAN_${tipe}_${targetId}_${st.absensiTanggal}_${st.absensiSesi}".hashCode() and 0x7FFFFFFF) + 1000
+        repository.emitRealtimeAlert(
+            RealtimeAlertItem(
+                title = notifTitle,
+                body = notifBody,
+                category = "absensi",
+                notifId = perPersonNotifId
+            )
+        )
+
+        val toastText = if (timing.terlambat) {
+            "⏰ $nama ($firqohDisplay): $status TERLAMBAT +${timing.menitTelat} mnt ($nowHms WIB)"
+        } else {
+            "✅ $nama ($firqohDisplay): $status Tepat Waktu ($nowHms WIB)"
+        }
+        showToast(toastText, isError = timing.terlambat)
+        return timing
     }
 
     // =========================================================================
@@ -1556,13 +1830,17 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
     // =========================================================================
     fun getActiveJuknisAcuan(): JuknisDocumentItem = JuknisRuleEngine.getActiveAcuan(database.value.juknisDocs)
 
-    fun getProblematicSantri(firqohFilter: String): List<SantriViolationResult> {
+    fun getProblematicSantri(
+        firqohFilter: String,
+        periodFilter: String = "ALL",
+        referenceDate: String = MmqaConstants.todayStr()
+    ): List<SantriViolationResult> {
         val db = database.value
         val ruleDoc = JuknisRuleEngine.getActiveAcuan(db.juknisDocs)
         return db.santri
             .filter { matchesFirqohFilter(it.firqohId, firqohFilter) }
             .mapNotNull { santri ->
-                val stats = calcAttendanceStats("santri", santri.id)
+                val stats = calcAttendanceStatsByPeriod("santri", santri.id, null, periodFilter, referenceDate)
                 JuknisRuleEngine.evaluateSantri(
                     santri = santri,
                     hadir = stats.hadir,

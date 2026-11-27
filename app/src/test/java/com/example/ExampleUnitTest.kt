@@ -1,5 +1,7 @@
 package com.example
 
+import com.example.data.AttendancePeriodHelper
+import com.example.data.AttendanceTimeEvaluator
 import com.example.data.DewanHarianItem
 import com.example.data.FirqohFilterHelper
 import com.example.data.FirqohItem
@@ -171,5 +173,83 @@ class ExampleUnitTest {
         assertNotNull(cardDewan)
         assertEquals("PJ Pendidikan & Kurikulum", cardDewan!!.primaryDetailValue)
         assertEquals("Ketua Umum", cardDewan.secondaryDetailValue)
+    }
+
+    @Test
+    fun attendance_period_filter_matches_daily_weekly_monthly_semester_yearly() {
+        val ref = "2026-11-26" // Thursday in week Mon 2026-11-23 .. Sun 2026-11-29, Semester Ganjil Jul-Dec 2026
+        assertTrue(AttendancePeriodHelper.matchesPeriod("2026-11-26", "HARIAN", ref))
+        assertFalse(AttendancePeriodHelper.matchesPeriod("2026-11-25", "HARIAN", ref))
+
+        assertTrue(AttendancePeriodHelper.matchesPeriod("2026-11-23", "MINGGUAN", ref))
+        assertTrue(AttendancePeriodHelper.matchesPeriod("2026-11-29", "MINGGUAN", ref))
+        assertFalse(AttendancePeriodHelper.matchesPeriod("2026-11-22", "MINGGUAN", ref))
+
+        assertTrue(AttendancePeriodHelper.matchesPeriod("2026-11-01", "BULANAN", ref))
+        assertTrue(AttendancePeriodHelper.matchesPeriod("2026-11-30", "BULANAN", ref))
+        assertFalse(AttendancePeriodHelper.matchesPeriod("2026-10-31", "BULANAN", ref))
+
+        assertTrue(AttendancePeriodHelper.matchesPeriod("2026-07-01", "SEMESTER", ref))
+        assertTrue(AttendancePeriodHelper.matchesPeriod("2026-12-31", "SEMESTER", ref))
+        assertFalse(AttendancePeriodHelper.matchesPeriod("2026-06-30", "SEMESTER", ref))
+
+        assertTrue(AttendancePeriodHelper.matchesPeriod("2026-01-01", "TAHUNAN", ref))
+        assertFalse(AttendancePeriodHelper.matchesPeriod("2025-12-31", "TAHUNAN", ref))
+
+        assertTrue(AttendancePeriodHelper.matchesPeriod("2024-01-01", "ALL", ref))
+        assertEquals("2026-11-27", AttendancePeriodHelper.shiftReferenceDate("HARIAN", ref, 1))
+    }
+
+    @Test
+    fun attendance_scan_timing_detects_on_time_vs_late_and_wa_phone_normalizes() {
+        val onTime = AttendanceTimeEvaluator.evaluateScanTiming("05:30:45", "05:30", "Hadir")
+        assertFalse(onTime.terlambat)
+        assertEquals(0, onTime.menitTelat)
+
+        val late = AttendanceTimeEvaluator.evaluateScanTiming("05:47:10", "05:30", "Hadir")
+        assertTrue(late.terlambat)
+        assertEquals(17, late.menitTelat)
+        assertEquals("05:30", late.batasWaktu)
+
+        val izin = AttendanceTimeEvaluator.evaluateScanTiming("06:10:00", "05:30", "Izin")
+        assertFalse(izin.terlambat)
+        assertEquals(0, izin.menitTelat)
+
+        assertEquals("6281234567801", MmqaConstants.normalizeIndoPhoneForWa("0812-3456-7801"))
+        assertEquals("6281234567801", MmqaConstants.normalizeIndoPhoneForWa("+62 812 3456 7801"))
+        assertEquals("", MmqaConstants.normalizeIndoPhoneForWa("-"))
+    }
+
+    @Test
+    fun role_access_restricts_dewan_and_muallim_recaps_from_wali_by_default() {
+        assertTrue(MmqaConstants.matchesRoleAccess("pengurus", "dewan_harian"))
+        assertTrue(MmqaConstants.matchesRoleAccess("pengurus", "muallim"))
+        assertFalse(MmqaConstants.matchesRoleAccess("pengurus", "wali_santri"))
+
+        assertTrue(MmqaConstants.matchesRoleAccess("all", "wali_santri"))
+        assertTrue(MmqaConstants.matchesRoleAccess("wali_santri", "wali_santri"))
+        assertFalse(MmqaConstants.matchesRoleAccess("wali_santri", "muallim"))
+
+        val cfg = MmqaDefaults.defaultAdminConfig()
+        assertEquals("pengurus", cfg.anakSub.first { it.id == "dashboard_muallim_rekap_view" }.roles)
+        assertEquals("pengurus", cfg.anakSub.first { it.id == "dashboard_dewan_rekap_view" }.roles)
+        assertEquals("all", cfg.anakSub.first { it.id == "dashboard_santri_rekap_view" }.roles)
+        assertEquals("pengurus", cfg.submenus.absensi.first { it.id == "muallim" }.roles)
+        assertEquals("pengurus", cfg.submenus.absensi.first { it.id == "dewan_harian" }.roles)
+        assertEquals("all", cfg.submenus.absensi.first { it.id == "santri" }.roles)
+    }
+
+    @Test
+    fun custom_admin_late_cutoff_applies_per_session() {
+        val perm = com.example.data.AdminPermissions(
+            batasTelatPagi = "05:45",
+            batasTelatSore = "16:15",
+            batasTelatMalam = "19:45",
+            batasTelatEvent = "09:00"
+        )
+        assertEquals("05:45", AttendanceTimeEvaluator.defaultCutoffForSession("Pagi", emptyList(), perm))
+        assertEquals("16:15", AttendanceTimeEvaluator.defaultCutoffForSession("Sore", emptyList(), perm))
+        assertEquals("19:45", AttendanceTimeEvaluator.defaultCutoffForSession("Malam", emptyList(), perm))
+        assertEquals("09:00", AttendanceTimeEvaluator.defaultCutoffForSession("Event: Istighotsah", emptyList(), perm))
     }
 }

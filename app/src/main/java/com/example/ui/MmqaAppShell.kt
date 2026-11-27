@@ -304,7 +304,11 @@ private fun MmqaSidebarContent(
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (currentUser.role == "dewan_harian") "DEWAN HARIAN" else "MU’ALLIM FIRQOH",
+                            text = when (currentUser.role) {
+                                "dewan_harian" -> "DEWAN HARIAN"
+                                "wali_santri" -> "WALI SANTRI"
+                                else -> "MU’ALLIM FIRQOH"
+                            },
                             fontSize = 9.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = Amber300

@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,6 +24,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.AbsensiRecord
+import com.example.data.AttendancePeriodHelper
+import com.example.data.MmqaConstants
 import com.example.data.MmqaDatabase
 import com.example.ui.MmqaUiState
 import com.example.ui.MmqaViewModel
@@ -34,10 +38,13 @@ import com.example.ui.components.MmqaBarcodeCard
 import com.example.ui.components.MmqaBarcodeEngine
 import com.example.ui.components.MmqaModalDialog
 import com.example.ui.components.MmqaReportFormatters
+import com.example.ui.components.PeriodFilterBar
 import com.example.ui.components.SectionCard
 import com.example.ui.components.StatusPill
 import com.example.ui.components.SubmenuTabsRow
 import com.example.ui.components.WaPdfActionRow
+import com.example.ui.components.WhatsappControllingDialog
+import com.example.ui.components.openWhatsAppDirect
 import com.example.ui.components.printHtmlDocument
 import com.example.ui.components.shareTextToWhatsApp
 import com.example.ui.theme.*
@@ -76,16 +83,30 @@ fun AbsensiScreen(
     }
     val canMarkAllPresent = canEditCurrentTab && (activeTab != "santri" || viewModel.canAccessAnakSub("absensi_santri_mark_all"))
     val canScanBarcode = viewModel.canAccessAnakSub("absensi_barcode_scan") && canEditCurrentTab
+    val isWaliUser = uiState.currentUser?.role == "wali_santri"
+    val linkedSantriId = if (isWaliUser) uiState.currentUser?.santriId.orEmpty().takeIf { it.isNotBlank() } else null
+    val canUseWaControlling = !isWaliUser && viewModel.canAccessAnakSub("dashboard_wa_controlling")
 
     var showScannerDialog by remember { mutableStateOf(false) }
     var showBarcodeDirectory by remember { mutableStateOf(false) }
     var previewBarcodeCard by remember { mutableStateOf<MmqaBarcodeCard?>(null) }
     var showCustomEventModal by remember { mutableStateOf(false) }
+    var showWhatsappControllingDialog by remember { mutableStateOf(false) }
+    var onlyLateRekapFilter by remember { mutableStateOf(false) }
 
     val sessionOptions = remember(db.jadwal, db.absensi, uiState.absensiSesi) {
         viewModel.buildAbsensiSessionOptions()
     }
     val isCustomOrEventSession = uiState.absensiSesi !in listOf("Pagi", "Sore", "Malam")
+    var sessionCutoffDraft by remember(uiState.absensiSesi, db.jadwal, db.adminConfig.permissions) {
+        mutableStateOf(
+            com.example.data.AttendanceTimeEvaluator.defaultCutoffForSession(
+                uiState.absensiSesi,
+                db.jadwal,
+                db.adminConfig.permissions
+            )
+        )
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SubmenuTabsRow(
@@ -189,29 +210,98 @@ fun AbsensiScreen(
                             modifier = Modifier.weight(1f)
                         )
                     }
-                    OutlinedButton(
-                        onClick = { showCustomEventModal = true },
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, Emerald700.copy(alpha = 0.5f)),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        modifier = Modifier.testTag("absensi_add_custom_event_btn")
+                    if (canEditCurrentTab) {
+                        OutlinedButton(
+                            onClick = { showCustomEventModal = true },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Emerald700.copy(alpha = 0.5f)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("absensi_add_custom_event_btn")
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Buat Event Kehadiran", tint = Emerald900, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Event Khusus", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Emerald900)
+                        }
+                    }
+                }
+
+                // Pengaturan Batas Jam Tepat Waktu / Telat (Berlaku untuk Santri, Mu'allim & Dewan Harian)
+                if (canEditCurrentTab) {
+                    Surface(
+                        color = Amber50.copy(alpha = 0.65f),
+                        border = BorderStroke(1.dp, Amber200),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = "Buat Event Kehadiran", tint = Emerald900, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Event Khusus", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Emerald900)
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "⏰ Batas Jam Tepat Waktu / Telat (${if (isCustomOrEventSession) uiState.absensiSesi else "Sesi ${uiState.absensiSesi}"})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Amber950
+                            )
+                            Text(
+                                text = "Berlaku untuk Santri, Mu'allim & Dewan Harian (Scan QR maupun input manual hari ini). Lewat jam ini otomatis tercatat Terlambat.",
+                                fontSize = 10.sp,
+                                color = Slate700
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedTextField(
+                                    value = sessionCutoffDraft,
+                                    onValueChange = { sessionCutoffDraft = it.take(5) },
+                                    label = { Text("Jam Batas (HH:mm)", fontSize = 10.sp) },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("absensi_session_cutoff_input")
+                                )
+                                Button(
+                                    onClick = { viewModel.saveSessionCutoff(uiState.absensiSesi, sessionCutoffDraft) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Emerald800),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 46.dp)
+                                        .testTag("absensi_save_cutoff_btn")
+                                ) {
+                                    Text("Simpan Batas", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                                }
+                            }
+                        }
                     }
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
                     if (activeTab == "santri") {
-                        val firqohOptions = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = true)
-                        CompactDropdownSelector(
-                            label = "Pilih Firqoh",
-                            selectedText = firqohOptions.firstOrNull { it.first == uiState.absensiFirqoh }?.second ?: viewModel.getFirqohName(uiState.absensiFirqoh),
-                            options = firqohOptions,
-                            onSelect = { fid -> viewModel.updateState { it.copy(absensiFirqoh = fid) } },
-                            modifier = Modifier.weight(1f)
-                        )
+                        if (linkedSantriId != null) {
+                            Surface(
+                                color = Sky100,
+                                border = BorderStroke(1.dp, Sky700.copy(alpha = 0.25f)),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = "👨‍👩‍👦 Mode Wali Santri (Baca Saja • Santri Tertaut)",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Sky900,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        } else {
+                            val firqohOptions = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = true)
+                            CompactDropdownSelector(
+                                label = "Pilih Firqoh",
+                                selectedText = firqohOptions.firstOrNull { it.first == uiState.absensiFirqoh }?.second ?: viewModel.getFirqohName(uiState.absensiFirqoh),
+                                options = firqohOptions,
+                                onSelect = { fid -> viewModel.updateState { it.copy(absensiFirqoh = fid) } },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     } else {
                         Surface(
                             color = Amber50,
@@ -284,17 +374,50 @@ fun AbsensiScreen(
             Spacer(modifier = Modifier.height(14.dp))
 
             val rows: List<AbsensiRowUi> = when (activeTab) {
-                "santri" -> db.santri.filter { viewModel.matchesFirqohFilter(it.firqohId, uiState.absensiFirqoh) }.map { s ->
+                "santri" -> db.santri.filter { s ->
+                    if (linkedSantriId != null) s.id == linkedSantriId
+                    else viewModel.matchesFirqohFilter(s.firqohId, uiState.absensiFirqoh)
+                }.map { s ->
                     val rec = viewModel.getAbsensiRecord("santri", s.id)
-                    AbsensiRowUi("santri", s.id, s.firqohId, s.nama, "NIS: ${s.nis} • ${viewModel.getFirqohName(s.firqohId)} • Wali: ${s.wali}", rec?.status ?: "", rec?.catatan ?: "")
+                    AbsensiRowUi(
+                        tipe = "santri",
+                        targetId = s.id,
+                        firqohId = s.firqohId,
+                        nama = s.nama,
+                        subInfo = "NIS: ${s.nis} • ${viewModel.getFirqohName(s.firqohId)} • Wali: ${s.wali}",
+                        status = rec?.status ?: "",
+                        catatan = rec?.catatan ?: "",
+                        record = rec,
+                        kontakWa = s.hpWali
+                    )
                 }
                 "muallim" -> db.muallim.map { m ->
                     val rec = viewModel.getAbsensiRecord("muallim", m.id)
-                    AbsensiRowUi("muallim", m.id, m.firqohId, m.nama, "NIY: ${m.niy} • ${viewModel.getFirqohName(m.firqohId)}", rec?.status ?: "", rec?.catatan ?: "")
+                    AbsensiRowUi(
+                        tipe = "muallim",
+                        targetId = m.id,
+                        firqohId = m.firqohId,
+                        nama = m.nama,
+                        subInfo = "NIY: ${m.niy} • ${viewModel.getFirqohName(m.firqohId)}",
+                        status = rec?.status ?: "",
+                        catatan = rec?.catatan ?: "",
+                        record = rec,
+                        kontakWa = m.hp
+                    )
                 }
                 else -> db.dewanHarian.map { d ->
                     val rec = viewModel.getAbsensiRecord("dewan_harian", d.id)
-                    AbsensiRowUi("dewan_harian", d.id, "", d.nama, "Kode: ${d.kode} • ${d.jabatan}", rec?.status ?: "", rec?.catatan ?: "")
+                    AbsensiRowUi(
+                        tipe = "dewan_harian",
+                        targetId = d.id,
+                        firqohId = "",
+                        nama = d.nama,
+                        subInfo = "Kode: ${d.kode} • ${d.jabatan}",
+                        status = rec?.status ?: "",
+                        catatan = rec?.catatan ?: "",
+                        record = rec,
+                        kontakWa = d.hp
+                    )
                 }
             }
 
@@ -306,6 +429,7 @@ fun AbsensiScreen(
                     else -> "Dewan Harian MMQA"
                 }
                 val hadirCnt = rows.count { it.status == "Hadir" }
+                val telatCnt = rows.count { it.record?.terlambat == true && it.status == "Hadir" }
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -313,25 +437,53 @@ fun AbsensiScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Rekap $sesiDisplay", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Slate700)
-                        StatusPill("Hadir: $hadirCnt / ${rows.size}", Emerald100, Emerald900)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            StatusPill("Hadir: $hadirCnt/${rows.size}", Emerald100, Emerald900)
+                            if (telatCnt > 0) {
+                                StatusPill("⏰ Telat: $telatCnt", Rose100, Rose800, Rose200)
+                            }
+                        }
                     }
                     WaPdfActionRow(
                         onShareWa = {
-                            val waText = MmqaReportFormatters.buildSessionAbsensiWa(
+                            val waText = MmqaReportFormatters.buildDetailedSessionAbsensiWa(
                                 tanggal = uiState.absensiTanggal,
                                 sesiLabel = sesiDisplay,
                                 kategoriLabel = kategoriDisplay,
-                                rows = rows.map { Triple(it.nama, it.subInfo, it.status) }
+                                rows = rows.map { it.nama to it.record },
+                                subInfoOf = { idx -> rows[idx].subInfo }
                             )
                             shareTextToWhatsApp(context, waText, "Bagikan Rekap $sesiDisplay")
                         },
                         onDownloadPdf = {
-                            val html = MmqaReportFormatters.buildSessionAbsensiPdfHtml(
-                                tanggal = uiState.absensiTanggal,
-                                sesiLabel = sesiDisplay,
-                                kategoriLabel = kategoriDisplay,
-                                rows = rows.map { Triple(it.nama, it.subInfo, it.status) }
+                            val logs = viewModel.getDetailedAbsensiLogs(
+                                tipe = activeTab,
+                                firqohFilter = if (activeTab == "santri") uiState.absensiFirqoh else "ALL",
+                                periodFilter = "HARIAN",
+                                referenceDate = uiState.absensiTanggal
+                            ).filter { it.record.sesi == uiState.absensiSesi }
+                            val stats = viewModel.calcAttendanceStatsByPeriod(
+                                tipe = activeTab,
+                                firqohId = if (activeTab == "santri") uiState.absensiFirqoh else null,
+                                periodFilter = "HARIAN",
+                                referenceDate = uiState.absensiTanggal
                             )
+                            val html = if (logs.isNotEmpty()) {
+                                MmqaReportFormatters.buildDetailedPeriodRecapPdfHtml(
+                                    periodLabel = "${uiState.absensiTanggal} ($sesiDisplay)",
+                                    kategoriLabel = kategoriDisplay,
+                                    stats = stats,
+                                    lateCount = telatCnt,
+                                    logs = logs
+                                )
+                            } else {
+                                MmqaReportFormatters.buildSessionAbsensiPdfHtml(
+                                    tanggal = uiState.absensiTanggal,
+                                    sesiLabel = sesiDisplay,
+                                    kategoriLabel = kategoriDisplay,
+                                    rows = rows.map { Triple(it.nama, it.subInfo, it.status) }
+                                )
+                            }
                             printHtmlDocument(context, "Absensi_${uiState.absensiTanggal}_${uiState.absensiSesi.take(20)}", html)
                         },
                         waLabel = "Rekap WA",
@@ -356,9 +508,10 @@ fun AbsensiScreen(
                         AbsensiItemCard(
                             row = row,
                             canEdit = canEditCurrentTab,
+                            showWaButton = canUseWaControlling,
                             isWideScreen = isWideScreen,
                             onStatusSelect = { status ->
-                                viewModel.setAbsensiStatus(row.tipe, row.targetId, row.firqohId, status)
+                                viewModel.setAbsensiStatus(row.tipe, row.targetId, row.firqohId, status, sessionCutoffDraft)
                             },
                             onCatatanCommit = { catatan ->
                                 viewModel.setAbsensiCatatan(row.tipe, row.targetId, row.firqohId, catatan)
@@ -373,8 +526,304 @@ fun AbsensiScreen(
                                         ?.let { MmqaBarcodeEngine.buildCardForDewan(db, it) }
                                 }
                                 if (card != null) previewBarcodeCard = card
+                            },
+                            onSendQuickWa = {
+                                val r = row.record
+                                val statusStr = row.status.ifBlank { "Belum Absen" }
+                                val msg = buildString {
+                                    appendLine("Assalamu'alaikum Wr. Wb.")
+                                    appendLine("Info Presensi *MMQA Al Rifai 02*")
+                                    appendLine("Nama: *${row.nama}*")
+                                    appendLine("Keterangan: ${row.subInfo}")
+                                    appendLine("Tanggal/Sesi: ${uiState.absensiTanggal} • ${uiState.absensiSesi}")
+                                    appendLine("Status: *$statusStr*")
+                                    if (r != null) {
+                                        if (r.waktuScan.isNotBlank()) appendLine("Jam Presensi: *${r.waktuScan} WIB*")
+                                        if (r.terlambat && r.status == "Hadir") {
+                                            appendLine("Ketepatan: ⏰ *TERLAMBAT +${r.menitTelat} menit* (Batas ${r.batasWaktu.ifBlank { "-" }})")
+                                        } else if (r.status == "Hadir" && r.batasWaktu.isNotBlank()) {
+                                            appendLine("Ketepatan: ✅ *Tepat Waktu* (Batas ${r.batasWaktu})")
+                                        }
+                                        if (r.metode.isNotBlank()) appendLine("Metode: ${r.metode}")
+                                    }
+                                }.trim()
+                                openWhatsAppDirect(context, row.kontakWa, msg, "Kirim Status Absensi ke WA")
                             }
                         )
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // REKAP ABSENSI DETAIL & FILTER PERIODE (HARIAN/MINGGUAN/BULANAN/SEMESTER/TAHUN)
+        // + KONTROL OTOMATIS WHATSAPP (DEWAN HARIAN / ORANG TUA / MU'ALLIM)
+        // =========================================================================
+        val activeFirqohRekap = if (activeTab == "santri") uiState.absensiFirqoh else "ALL"
+        val scopedTargetIdRekap = if (activeTab == "santri") linkedSantriId else null
+        val periodStats = viewModel.calcAttendanceStatsByPeriod(
+            tipe = activeTab,
+            targetId = scopedTargetIdRekap,
+            firqohId = if (activeTab == "santri" && scopedTargetIdRekap == null) activeFirqohRekap else null,
+            periodFilter = uiState.absensiRekapPeriode,
+            referenceDate = uiState.absensiRekapRefDate
+        )
+        val periodLateCount = viewModel.countLateAttendance(
+            tipe = activeTab,
+            targetId = scopedTargetIdRekap,
+            firqohId = if (activeTab == "santri" && scopedTargetIdRekap == null) activeFirqohRekap else null,
+            periodFilter = uiState.absensiRekapPeriode,
+            referenceDate = uiState.absensiRekapRefDate
+        )
+        val detailedLogs = remember(
+            db.absensi, db.santri, db.muallim, db.dewanHarian,
+            activeTab, activeFirqohRekap, scopedTargetIdRekap, uiState.absensiRekapPeriode, uiState.absensiRekapRefDate, onlyLateRekapFilter
+        ) {
+            val base = viewModel.getDetailedAbsensiLogs(
+                tipe = activeTab,
+                firqohFilter = activeFirqohRekap,
+                periodFilter = uiState.absensiRekapPeriode,
+                referenceDate = uiState.absensiRekapRefDate,
+                onlyLate = onlyLateRekapFilter
+            )
+            if (scopedTargetIdRekap != null) base.filter { it.record.targetId == scopedTargetIdRekap } else base
+        }
+        val periodLabel = remember(uiState.absensiRekapPeriode, uiState.absensiRekapRefDate) {
+            AttendancePeriodHelper.getPeriodRangeLabel(uiState.absensiRekapPeriode, uiState.absensiRekapRefDate)
+        }
+        val rekapKategoriLabel = when (activeTab) {
+            "santri" -> "Santri (${viewModel.getFirqohFilterDisplayLabel(activeFirqohRekap)})"
+            "muallim" -> "Mu'allim Firqoh"
+            else -> "Dewan Harian MMQA"
+        }
+
+        SectionCard {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "📊 Rekap Detail Scan & Filter Periode",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black,
+                            color = Slate900
+                        )
+                        Text(
+                            text = "Menampilkan waktu absen WIB, metode scan, batas jam, & status terlambat untuk controlling.",
+                            fontSize = 11.sp,
+                            color = Slate500
+                        )
+                    }
+                    StatusPill("${periodStats.pct}%", Emerald100, Emerald900)
+                }
+
+                PeriodFilterBar(
+                    selectedPeriod = uiState.absensiRekapPeriode,
+                    referenceDate = uiState.absensiRekapRefDate,
+                    onSelectPeriod = { p -> viewModel.updateState { it.copy(absensiRekapPeriode = p) } },
+                    onShiftDate = { delta ->
+                        viewModel.updateState {
+                            it.copy(
+                                absensiRekapRefDate = AttendancePeriodHelper.shiftReferenceDate(
+                                    it.absensiRekapPeriode,
+                                    it.absensiRekapRefDate,
+                                    delta
+                                )
+                            )
+                        }
+                    },
+                    onResetToday = { viewModel.updateState { it.copy(absensiRekapRefDate = MmqaConstants.todayStr()) } }
+                )
+
+                // Ringkasan Statistik + Filter Hanya Terlambat
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    StatusPill("H: ${periodStats.hadir}/${periodStats.total}", Emerald100, Emerald900)
+                    StatusPill("⏰ Telat: $periodLateCount", if (periodLateCount > 0) Rose600 else Slate100, if (periodLateCount > 0) Color.White else Slate700)
+                    StatusPill("I:${periodStats.izin} S:${periodStats.sakit} A:${periodStats.alpha}", Amber100, Amber950)
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { onlyLateRekapFilter = !onlyLateRekapFilter }) {
+                        Checkbox(
+                            checked = onlyLateRekapFilter,
+                            onCheckedChange = { onlyLateRekapFilter = it },
+                            colors = CheckboxDefaults.colors(checkedColor = Rose700)
+                        )
+                        Text(
+                            text = "Filter Hanya yang Terlambat",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (onlyLateRekapFilter) Rose800 else Slate700
+                        )
+                    }
+                    if (canUseWaControlling) {
+                        Button(
+                            onClick = { showWhatsappControllingDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Emerald900, contentColor = Amber300),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 40.dp)
+                                .testTag("absensi_open_wa_controlling_btn")
+                        ) {
+                            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text("Kontrol WA", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+                }
+
+                WaPdfActionRow(
+                    onShareWa = {
+                        val waMsg = MmqaReportFormatters.buildDetailedPeriodRecapWa(
+                            periodLabel = periodLabel,
+                            kategoriLabel = rekapKategoriLabel,
+                            stats = periodStats,
+                            lateCount = periodLateCount,
+                            logs = detailedLogs
+                        )
+                        shareTextToWhatsApp(context, waMsg, "Bagikan Rekap $periodLabel")
+                    },
+                    onDownloadPdf = {
+                        val html = MmqaReportFormatters.buildDetailedPeriodRecapPdfHtml(
+                            periodLabel = periodLabel,
+                            kategoriLabel = rekapKategoriLabel,
+                            stats = periodStats,
+                            lateCount = periodLateCount,
+                            logs = detailedLogs
+                        )
+                        printHtmlDocument(context, "Rekap_Detail_${uiState.absensiRekapPeriode}_${uiState.absensiRekapRefDate}", html)
+                    },
+                    waLabel = "Rekap Periode WA",
+                    pdfLabel = "Rekap Periode PDF",
+                    waTestTag = "absensi_period_wa_btn",
+                    pdfTestTag = "absensi_period_pdf_btn"
+                )
+
+                if (detailedLogs.isEmpty()) {
+                    Surface(
+                        color = Slate50,
+                        border = BorderStroke(1.dp, Slate200),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (onlyLateRekapFilter) "Tidak ada catatan keterlambatan pada periode $periodLabel." else "Belum ada log absensi tercatat pada periode $periodLabel.",
+                            fontSize = 12.sp,
+                            color = Slate500,
+                            modifier = Modifier.padding(14.dp)
+                        )
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        detailedLogs.take(40).forEach { logItem ->
+                            val r = logItem.record
+                            val isLate = r.terlambat && r.status == "Hadir"
+                            Surface(
+                                color = if (isLate) Rose50.copy(alpha = 0.72f) else Slate50,
+                                border = BorderStroke(1.dp, if (isLate) Rose200 else Slate200),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = logItem.nama,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = Slate900
+                                            )
+                                            Text(
+                                                text = "${logItem.nomorIdentitas} • ${logItem.firqohName}",
+                                                fontSize = 10.sp,
+                                                color = Slate500,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            if (isLate) {
+                                                StatusPill("⏰ TELAT +${r.menitTelat}m", Rose600, Color.White)
+                                            } else {
+                                                val (stBg, stTxt) = when (r.status) {
+                                                    "Hadir" -> Emerald100 to Emerald900
+                                                    "Izin" -> Amber100 to Amber950
+                                                    "Sakit" -> Sky100 to Sky900
+                                                    else -> Rose100 to Rose800
+                                                }
+                                                StatusPill(r.status, stBg, stTxt)
+                                            }
+                                            if (canUseWaControlling && logItem.kontakWa.isNotBlank()) {
+                                                Surface(
+                                                    color = Emerald100,
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    modifier = Modifier
+                                                        .defaultMinSize(minHeight = 32.dp)
+                                                        .clickable {
+                                                            val msg = buildString {
+                                                                appendLine("Assalamu'alaikum Wr. Wb.")
+                                                                appendLine("Laporan Controlling Presensi *MMQA Al Rifai 02*")
+                                                                appendLine("Nama: *${logItem.nama}* (${logItem.firqohName})")
+                                                                appendLine("Tanggal / Sesi: ${r.tanggal} • ${r.sesi}")
+                                                                appendLine("Status: *${r.status}*" + if (isLate) " (⏰ *TERLAMBAT +${r.menitTelat} mnt*)" else "")
+                                                                if (r.waktuScan.isNotBlank()) appendLine("Waktu Scan: *${r.waktuScan} WIB*")
+                                                                if (r.batasWaktu.isNotBlank()) appendLine("Batas Jam: ${r.batasWaktu} WIB")
+                                                                if (r.metode.isNotBlank()) appendLine("Metode: ${r.metode}")
+                                                                if (r.petugasScan.isNotBlank()) appendLine("Petugas: ${r.petugasScan}")
+                                                            }.trim()
+                                                            openWhatsAppDirect(context, logItem.kontakWa, msg, "Kirim WA Controlling")
+                                                        }
+                                                ) {
+                                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                                                        Text("📲 WA", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Emerald900)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Detail Waktu Scan, Metode, Batas & Petugas
+                                    val detailParts = buildList {
+                                        add("📅 ${r.tanggal} (${r.sesi})")
+                                        if (r.waktuScan.isNotBlank()) add("🕒 ${r.waktuScan} WIB")
+                                        if (r.batasWaktu.isNotBlank()) add("⏱ Batas ${r.batasWaktu}")
+                                        if (r.metode.isNotBlank()) add(r.metode)
+                                        if (r.petugasScan.isNotBlank()) add("👮 ${r.petugasScan}")
+                                    }.joinToString(" • ")
+                                    Text(
+                                        text = detailParts,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isLate) Rose800 else Slate700
+                                    )
+                                    if (r.catatan.isNotBlank()) {
+                                        Text(
+                                            text = "📝 ${r.catatan}",
+                                            fontSize = 10.sp,
+                                            color = Slate500,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -386,13 +835,15 @@ fun AbsensiScreen(
             db = db,
             activeTanggal = uiState.absensiTanggal,
             activeSesi = uiState.absensiSesi,
-            onScannedAttendance = { card, status ->
+            initialCutoffHm = sessionCutoffDraft,
+            onScannedAttendance = { card, status, customCutoffHm ->
                 viewModel.recordBarcodeAttendance(
                     tipe = card.tipe,
                     targetId = card.targetId,
                     firqohId = card.firqohId,
                     nama = card.nama,
-                    status = status
+                    status = status,
+                    customCutoffHm = customCutoffHm
                 )
             },
             onDismiss = { showScannerDialog = false }
@@ -413,6 +864,17 @@ fun AbsensiScreen(
         BarcodeCardPreviewDialog(
             card = card,
             onDismiss = { previewBarcodeCard = null }
+        )
+    }
+
+    if (showWhatsappControllingDialog) {
+        WhatsappControllingDialog(
+            db = db,
+            viewModel = viewModel,
+            periodFilter = uiState.absensiRekapPeriode,
+            referenceDate = uiState.absensiRekapRefDate,
+            firqohFilter = if (activeTab == "santri") uiState.absensiFirqoh else "ALL",
+            onDismiss = { showWhatsappControllingDialog = false }
         )
     }
 
@@ -500,17 +962,21 @@ private data class AbsensiRowUi(
     val nama: String,
     val subInfo: String,
     val status: String,
-    val catatan: String
+    val catatan: String,
+    val record: AbsensiRecord? = null,
+    val kontakWa: String = ""
 )
 
 @Composable
 private fun AbsensiItemCard(
     row: AbsensiRowUi,
     canEdit: Boolean,
+    showWaButton: Boolean,
     isWideScreen: Boolean,
     onStatusSelect: (String) -> Unit,
     onCatatanCommit: (String) -> Unit,
-    onShowBarcode: () -> Unit
+    onShowBarcode: () -> Unit,
+    onSendQuickWa: () -> Unit
 ) {
     var noteDraft by remember(row.targetId, row.catatan, row.status) { mutableStateOf(row.catatan) }
     val statusSpecs = listOf(
@@ -519,10 +985,12 @@ private fun AbsensiItemCard(
         Triple("Sakit", Sky700, Sky100),
         Triple("Alpha", Rose600, Rose50)
     )
+    val rec = row.record
+    val isLate = rec?.terlambat == true && row.status == "Hadir"
 
     Surface(
-        color = Slate50,
-        border = BorderStroke(1.dp, Slate200),
+        color = if (isLate) Rose50.copy(alpha = 0.72f) else Slate50,
+        border = BorderStroke(if (isLate) 1.5.dp else 1.dp, if (isLate) Rose600.copy(alpha = 0.55f) else Slate200),
         shape = RoundedCornerShape(18.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -542,21 +1010,66 @@ private fun AbsensiItemCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Surface(
-                    color = Emerald50,
-                    border = BorderStroke(1.dp, Emerald100),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clickable(onClick = onShowBarcode)
+                Spacer(modifier = Modifier.width(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (showWaButton && row.kontakWa.isNotBlank()) {
+                        Surface(
+                            color = Emerald100,
+                            border = BorderStroke(1.dp, Emerald700.copy(alpha = 0.35f)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clickable(onClick = onSendQuickWa)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Send,
+                                    contentDescription = "Kirim WA ${row.nama}",
+                                    tint = Emerald900,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                    Surface(
+                        color = Emerald50,
+                        border = BorderStroke(1.dp, Emerald100),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clickable(onClick = onShowBarcode)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.QrCode2,
+                                contentDescription = "Kartu Barcode ${row.nama}",
+                                tint = Emerald900,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (rec != null && (rec.waktuScan.isNotBlank() || rec.metode.isNotBlank() || isLate)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.QrCode2,
-                            contentDescription = "Kartu Barcode ${row.nama}",
-                            tint = Emerald900,
-                            modifier = Modifier.size(20.dp)
+                    if (isLate) {
+                        StatusPill("⏰ TERLAMBAT +${rec.menitTelat} mnt", Rose600, Color.White)
+                    } else if (row.status == "Hadir" && rec.batasWaktu.isNotBlank()) {
+                        StatusPill("✅ Tepat Waktu", Emerald100, Emerald900)
+                    }
+                    if (rec.waktuScan.isNotBlank()) {
+                        StatusPill("🕒 ${rec.waktuScan} WIB", Color.White, Slate700, Slate200)
+                    }
+                    if (rec.metode.isNotBlank()) {
+                        StatusPill(
+                            text = if (rec.metode.contains("Scan", true)) "📷 Scan QR" else "✍️ Manual",
+                            bgColor = Sky100,
+                            textColor = Sky900
                         )
                     }
                 }

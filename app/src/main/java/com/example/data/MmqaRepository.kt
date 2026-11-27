@@ -33,7 +33,8 @@ sealed interface SyncBannerState {
 data class RealtimeAlertItem(
     val title: String,
     val body: String,
-    val category: String
+    val category: String,
+    val notifId: Int = (System.currentTimeMillis() % 100000).toInt()
 )
 
 class MmqaRepository(private val context: Context) {
@@ -146,6 +147,10 @@ class MmqaRepository(private val context: Context) {
 
     fun setActiveActor(name: String) {
         activeActorName = name.ifBlank { "MMQA AR2 APK" }
+    }
+
+    fun emitRealtimeAlert(alert: RealtimeAlertItem) {
+        _realtimeAlerts.tryEmit(alert)
     }
 
     fun isNetworkAvailable(): Boolean {

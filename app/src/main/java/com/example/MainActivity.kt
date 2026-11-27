@@ -513,7 +513,7 @@ private fun MmqaRootApp(activity: FragmentActivity, viewModel: MmqaViewModel) {
                 // Real-time HP notifications for offline-to-online auto-sync & database updates
                 LaunchedEffect(activeFirebaseUser.uid, viewModel) {
                     viewModel.realtimeAlerts.collect { alert ->
-                        MmqaLocalNotifier.showNotification(context, alert.title, alert.body)
+                        MmqaLocalNotifier.showNotification(context, alert.title, alert.body, alert.notifId)
                         notifVm.pushNotification(
                             title = alert.title,
                             body = alert.body,

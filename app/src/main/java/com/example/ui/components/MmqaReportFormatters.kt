@@ -585,7 +585,7 @@ object MmqaReportFormatters {
     }
 
     // =========================================================================
-    // 8. REKAP ABSENSI PER SESI / EVENT KEHADIRAN TERTENTU
+    // 8. REKAP ABSENSI PER SESI / EVENT & REKAP DETAIL PERIODE + KONTROL WA
     // =========================================================================
     fun buildSessionAbsensiWa(
         tanggal: String,
@@ -605,6 +605,37 @@ object MmqaReportFormatters {
         rows.forEachIndexed { idx, (nama, info, status) ->
             val st = status.ifBlank { "Belum Absen" }
             appendLine("${idx + 1}. *$nama* — *$st* ($info)")
+        }
+    }.trim()
+
+    fun buildDetailedSessionAbsensiWa(
+        tanggal: String,
+        sesiLabel: String,
+        kategoriLabel: String,
+        rows: List<Pair<String, AbsensiRecord?>>,
+        subInfoOf: (Int) -> String
+    ): String = buildString {
+        val hadir = rows.count { it.second?.status == "Hadir" }
+        val late = rows.count { it.second?.status == "Hadir" && it.second?.terlambat == true }
+        val izin = rows.count { it.second?.status == "Izin" }
+        val sakit = rows.count { it.second?.status == "Sakit" }
+        val alpha = rows.count { it.second?.status == "Alpha" }
+        val belum = rows.count { it.second == null || it.second?.status.isNullOrBlank() }
+        appendLine("📋 *REKAP PRESENSI DETAIL — $sesiLabel*")
+        appendLine("📅 Tanggal: *$tanggal* • Kategori: *$kategoriLabel*")
+        appendLine("✅ Hadir: *$hadir* (⏰ Telat: *$late*) | 🟡 Izin: *$izin* | 🔵 Sakit: *$sakit* | 🔴 Alpha: *$alpha* | ⚪ Belum: *$belum*")
+        appendLine()
+        rows.forEachIndexed { idx, (nama, rec) ->
+            val st = rec?.status?.ifBlank { "Belum Absen" } ?: "Belum Absen"
+            val timePart = if (!rec?.waktuScan.isNullOrBlank()) " • 🕒 ${rec?.waktuScan} WIB" else ""
+            val latePart = if (rec?.terlambat == true) " • ⚠️ *TERLAMBAT +${rec.menitTelat} mnt*" else if (rec?.status == "Hadir" && !rec.batasWaktu.isBlank()) " • ✅ Tepat Waktu" else ""
+            val methodPart = if (!rec?.metode.isNullOrBlank()) " [${rec?.metode}]" else ""
+            val officerPart = if (!rec?.petugasScan.isNullOrBlank()) " • Petugas: ${rec?.petugasScan}" else ""
+            appendLine("${idx + 1}. *$nama* — *$st*$latePart$timePart$methodPart")
+            appendLine("   ${subInfoOf(idx)}$officerPart")
+            if (!rec?.catatan.isNullOrBlank()) {
+                appendLine("   📝 ${rec?.catatan}")
+            }
         }
     }.trim()
 
@@ -631,4 +662,184 @@ object MmqaReportFormatters {
             rows = tableRows
         )
     }
+
+    fun buildDetailedPeriodRecapWa(
+        periodLabel: String,
+        kategoriLabel: String,
+        stats: AttendanceStats,
+        lateCount: Int,
+        logs: List<com.example.ui.DetailedAbsensiLogUi>
+    ): String = buildString {
+        appendLine("📊 *REKAP ABSENSI DETAIL ($periodLabel)*")
+        appendLine("Kategori: *$kategoriLabel* • MMQA Al Rifai 02")
+        appendLine("✅ Hadir: *${stats.hadir}/${stats.total}* (*${stats.pct}%*) • ⏰ Terlambat: *$lateCount*")
+        appendLine("🟡 Izin: *${stats.izin}* | 🔵 Sakit: *${stats.sakit}* | 🔴 Alpha: *${stats.alpha}*")
+        appendLine()
+        if (logs.isEmpty()) {
+            appendLine("_Belum ada catatan absensi pada periode ini._")
+        } else {
+            logs.take(40).forEachIndexed { idx, item ->
+                val r = item.record
+                val statusTag = if (r.terlambat && r.status == "Hadir") {
+                    "⏰ Hadir (TELAT +${r.menitTelat} mnt)"
+                } else if (r.status == "Hadir" && r.waktuScan.isNotBlank()) {
+                    "✅ Hadir (Tepat Waktu)"
+                } else {
+                    r.status
+                }
+                val jam = if (r.waktuScan.isNotBlank()) " • ${r.waktuScan} WIB" else ""
+                val mtd = if (r.metode.isNotBlank()) " [${r.metode}]" else ""
+                appendLine("${idx + 1}. *${item.nama}* (${item.firqohName})")
+                appendLine("   📅 ${r.tanggal} (${r.sesi})$jam — *$statusTag*$mtd")
+                if (r.batasWaktu.isNotBlank() || r.petugasScan.isNotBlank()) {
+                    appendLine("   Batas: ${r.batasWaktu.ifBlank { "-" }} • Petugas: ${r.petugasScan.ifBlank { "-" }}")
+                }
+            }
+            if (logs.size > 40) {
+                appendLine("... dan ${logs.size - 40} catatan lainnya (lihat PDF untuk daftar lengkap).")
+            }
+        }
+    }.trim()
+
+    fun buildDetailedPeriodRecapPdfHtml(
+        periodLabel: String,
+        kategoriLabel: String,
+        stats: AttendanceStats,
+        lateCount: Int,
+        logs: List<com.example.ui.DetailedAbsensiLogUi>
+    ): String {
+        val rows = logs.mapIndexed { idx, item ->
+            val r = item.record
+            val ketWaktu = when {
+                r.terlambat && r.status == "Hadir" -> "TERLAMBAT +${r.menitTelat} mnt (Batas ${r.batasWaktu.ifBlank { "-" }})"
+                r.status == "Hadir" && r.batasWaktu.isNotBlank() -> "Tepat Waktu (Batas ${r.batasWaktu})"
+                else -> "-"
+            }
+            listOf(
+                "${idx + 1}",
+                r.tanggal,
+                r.sesi,
+                item.nama,
+                item.firqohName,
+                r.status,
+                r.waktuScan.ifBlank { "-" },
+                ketWaktu,
+                r.metode.ifBlank { "-" },
+                r.petugasScan.ifBlank { "-" }
+            )
+        }
+        return wrapReportHtml(
+            title = "Rekap Absensi Detail — $periodLabel",
+            subtitle = "Log Scan Barcode & Kedisiplinan Kehadiran ($kategoriLabel)",
+            metaLine = "Periode: $periodLabel • Total Catatan: ${logs.size}",
+            summaryBanner = "Kehadiran: ${stats.pct}% (${stats.hadir}/${stats.total}) | Terlambat: $lateCount | Izin: ${stats.izin} | Sakit: ${stats.sakit} | Alpha: ${stats.alpha}",
+            tableHeaders = listOf("No", "Tanggal", "Sesi/Event", "Nama", "Firqoh", "Status", "Jam Scan", "Ketepatan Waktu", "Metode", "Petugas"),
+            rows = rows
+        )
+    }
+
+    fun buildWaliControllingWa(
+        db: MmqaDatabase,
+        santri: SantriItem,
+        stats: AttendanceStats,
+        lateCount: Int,
+        periodLabel: String,
+        recentLogs: List<AbsensiRecord>
+    ): String = buildString {
+        val fName = firqohName(db, santri.firqohId)
+        val muallimNames = db.muallim.filter { it.firqohId == santri.firqohId }.joinToString(", ") { it.nama }.ifBlank { "-" }
+        appendLine("Assalamu'alaikum Wr. Wb.")
+        appendLine("Yth. Bapak/Ibu *${santri.wali.ifBlank { "Wali Santri" }}*,")
+        appendLine("Berikut laporan controlling kehadiran putra/putri Anda di *MMQA Al Rifai 02*:")
+        appendLine()
+        appendLine("👤 Santri: *${santri.nama}* (NIS ${santri.nis})")
+        appendLine("🏫 Firqoh: *$fName* • Mu'allim: $muallimNames")
+        appendLine("📅 Periode: *$periodLabel*")
+        appendLine("📊 Persentase Hadir: *${stats.pct}%* (${stats.hadir}/${stats.total} sesi)")
+        appendLine("   • Hadir: ${stats.hadir} | ⏰ Telat: $lateCount | Izin: ${stats.izin} | Sakit: ${stats.sakit} | Alpha: ${stats.alpha}")
+        if (recentLogs.isNotEmpty()) {
+            appendLine()
+            appendLine("🕒 *Riwayat Presensi Terbaru:*")
+            recentLogs.take(5).forEach { r ->
+                val telatTxt = if (r.terlambat && r.status == "Hadir") " (⏰ TELAT +${r.menitTelat} mnt)" else ""
+                val jamTxt = if (r.waktuScan.isNotBlank()) " pkl ${r.waktuScan}" else ""
+                appendLine("• ${r.tanggal} [${r.sesi}]: *${r.status}*$telatTxt$jamTxt")
+            }
+        }
+        appendLine()
+        appendLine("Mohon doa & pendampingan agar ananda senantiasa istiqamah dan tepat waktu. Jazakumullahu Khairan.")
+    }.trim()
+
+    fun buildMuallimControllingWa(
+        db: MmqaDatabase,
+        muallim: MuallimItem,
+        firqohStats: AttendanceStats,
+        lateSantriCount: Int,
+        muallimStats: AttendanceStats,
+        periodLabel: String,
+        flaggedSantri: List<Triple<SantriItem, AttendanceStats, Int>>
+    ): String = buildString {
+        val fName = firqohName(db, muallim.firqohId)
+        appendLine("Assalamu'alaikum Wr. Wb.")
+        appendLine("Yth. *${muallim.nama}* (Mu'allim $fName),")
+        appendLine("Berikut rekap controlling absensi firqoh periode *$periodLabel*:")
+        appendLine()
+        appendLine("📖 Kehadiran Mu'allim: *${muallimStats.pct}%* (${muallimStats.hadir}/${muallimStats.total})")
+        appendLine("🎓 Kehadiran Santri $fName: *${firqohStats.pct}%* (${firqohStats.hadir}/${firqohStats.total})")
+        appendLine("   • ⏰ Santri Terlambat: *$lateSantriCount* kali | Izin: ${firqohStats.izin} | Sakit: ${firqohStats.sakit} | Alpha: ${firqohStats.alpha}")
+        if (flaggedSantri.isNotEmpty()) {
+            appendLine()
+            appendLine("⚠️ *Santri Perlu Pembinaan / Sering Telat & Alpha:*")
+            flaggedSantri.take(8).forEach { (s, st, lCnt) ->
+                appendLine("• *${s.nama}*: Hadir ${st.pct}% • Alpha ${st.alpha}x • Telat ${lCnt}x")
+            }
+        }
+        appendLine()
+        appendLine("Mohon tindak lanjut pembinaan santri di firqoh masing-masing. Syukron.")
+    }.trim()
+
+    fun buildDewanControllingWa(
+        dewan: DewanHarianItem,
+        periodLabel: String,
+        santriStats: AttendanceStats,
+        santriLate: Int,
+        muallimStats: AttendanceStats,
+        dewanStats: AttendanceStats,
+        flaggedSantri: List<SantriViolationResult>,
+        muallimLate: Int = 0,
+        dewanLate: Int = 0
+    ): String = buildString {
+        appendLine("Assalamu'alaikum Wr. Wb.")
+        appendLine("Yth. *${dewan.nama}* (${dewan.jabatan}),")
+        appendLine("Laporan Controlling Kedisiplinan *MMQA Al Rifai 02*:")
+        appendLine("📅 Periode: *$periodLabel*")
+        appendLine()
+        appendLine("🎓 Santri: *${santriStats.pct}%* (${santriStats.hadir}/${santriStats.total}) • ⏰ Telat: *$santriLate* • Alpha: ${santriStats.alpha}")
+        appendLine("📖 Mu'allim: *${muallimStats.pct}%* (${muallimStats.hadir}/${muallimStats.total}) • ⏰ Telat: *$muallimLate*")
+        appendLine("👑 Dewan Harian: *${dewanStats.pct}%* (${dewanStats.hadir}/${dewanStats.total}) • ⏰ Telat: *$dewanLate*")
+        if (flaggedSantri.isNotEmpty()) {
+            appendLine()
+            appendLine("⚖️ *Santri Melampaui Batas Juknis (${flaggedSantri.size}):*")
+            flaggedSantri.take(8).forEach { res ->
+                appendLine("• *${res.santri.nama}* (${res.firqohName}) — ${res.levelLabel} (A:${res.alphaCount} I:${res.izinCount})")
+            }
+        }
+        appendLine()
+        appendLine("Dikirim otomatis dari Panel Kontrol MMQA AR2.")
+    }.trim()
+
+    fun buildSingleScanControllingWa(
+        card: MmqaBarcodeCard,
+        tanggal: String,
+        sesi: String,
+        status: String,
+        timing: ScanTimingResult
+    ): String = buildString {
+        appendLine("📲 *NOTIFIKASI PRESENSI BARCODE MMQA AR2*")
+        appendLine("Nama: *${card.nama}* (${card.nomorIdentitas})")
+        appendLine("${card.primaryDetailLabel}: ${card.primaryDetailValue}")
+        appendLine("Tanggal / Sesi: $tanggal • $sesi")
+        appendLine("Status: *$status*" + if (timing.terlambat) " (⏰ *TERLAMBAT +${timing.menitTelat} menit*)" else " (✅ *Tepat Waktu*)")
+        appendLine("Waktu Scan: *${timing.waktuScan} WIB*" + if (timing.batasWaktu.isNotBlank()) " • Batas: ${timing.batasWaktu}" else "")
+    }.trim()
 }

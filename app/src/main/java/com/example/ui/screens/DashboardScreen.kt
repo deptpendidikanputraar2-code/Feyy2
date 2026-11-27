@@ -1,26 +1,34 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.clickable
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.AttendancePeriodHelper
 import com.example.data.MmqaConstants
 import com.example.data.MmqaDatabase
 import com.example.ui.MmqaUiState
@@ -36,64 +44,183 @@ fun DashboardScreen(
     isWideScreen: Boolean
 ) {
     val context = LocalContext.current
-    val santriStats = viewModel.calcAttendanceStats("santri", null, uiState.dashFirqohFilter)
-    val muallimStats = viewModel.calcAttendanceStats("muallim")
-    val dewanStats = viewModel.calcAttendanceStats("dewan_harian")
+    var showWhatsappControllingDialog by remember { mutableStateOf(false) }
+
+    val activePeriod = uiState.dashPeriodeFilter
+    val activeRefDate = uiState.dashPeriodeRefDate
+    val periodLabel = remember(activePeriod, activeRefDate) {
+        AttendancePeriodHelper.getPeriodRangeLabel(activePeriod, activeRefDate)
+    }
+
+    val isWaliUser = uiState.currentUser?.role == "wali_santri"
+    val linkedSantriId = if (isWaliUser) uiState.currentUser?.santriId.orEmpty().takeIf { it.isNotBlank() } else null
+
+    val canViewSantriRekap = viewModel.canAccessAnakSub("dashboard_santri_rekap_view")
+    val canViewMuallimRekap = viewModel.canAccessAnakSub("dashboard_muallim_rekap_view")
+    val canViewDewanRekap = viewModel.canAccessAnakSub("dashboard_dewan_rekap_view")
+    val canViewBermasalahDash = viewModel.canAccessAnakSub("dashboard_bermasalah_view")
+    val canViewWaControllingDash = viewModel.canAccessAnakSub("dashboard_wa_controlling") && !isWaliUser
+    val canViewKeuanganDash = viewModel.canAccessAnakSub("dashboard_keuangan_view")
+
+    val santriStats = viewModel.calcAttendanceStatsByPeriod(
+        tipe = "santri",
+        targetId = linkedSantriId,
+        firqohId = if (linkedSantriId != null) null else uiState.dashFirqohFilter,
+        periodFilter = activePeriod,
+        referenceDate = activeRefDate
+    )
+    val santriLateTotal = viewModel.countLateAttendance(
+        tipe = "santri",
+        targetId = linkedSantriId,
+        firqohId = if (linkedSantriId != null) null else uiState.dashFirqohFilter,
+        periodFilter = activePeriod,
+        referenceDate = activeRefDate
+    )
+    val muallimStats = viewModel.calcAttendanceStatsByPeriod("muallim", null, null, activePeriod, activeRefDate)
+    val muallimLateTotal = viewModel.countLateAttendance("muallim", null, null, activePeriod, activeRefDate)
+    val dewanStats = viewModel.calcAttendanceStatsByPeriod("dewan_harian", null, null, activePeriod, activeRefDate)
+    val dewanLateTotal = viewModel.countLateAttendance("dewan_harian", null, null, activePeriod, activeRefDate)
 
     val pemasukan = db.keuangan.filter { it.jenis == "pemasukan" }.sumOf { it.nominal }
     val pengeluaran = db.keuangan.filter { it.jenis == "pengeluaran" }.sumOf { it.nominal }
     val saldoKas = pemasukan - pengeluaran
-    val canViewKeuanganDash = viewModel.canAccessAnakSub("dashboard_keuangan_view")
 
     val activeJuknisRule = remember(db.juknisDocs) { viewModel.getActiveJuknisAcuan() }
-    val problematicSantri = remember(db.santri, db.absensi, db.firqoh, db.juknisDocs, uiState.dashFirqohFilter) {
-        viewModel.getProblematicSantri(uiState.dashFirqohFilter)
+    val problematicSantri = remember(db.santri, db.absensi, db.firqoh, db.juknisDocs, uiState.dashFirqohFilter, activePeriod, activeRefDate, linkedSantriId) {
+        val raw = viewModel.getProblematicSantri(uiState.dashFirqohFilter, activePeriod, activeRefDate)
+        if (linkedSantriId != null) raw.filter { it.santri.id == linkedSantriId } else raw
     }
 
-    val filteredSantri = db.santri.filter { viewModel.matchesFirqohFilter(it.firqohId, uiState.dashFirqohFilter) }
-    val dashFilterLabel = viewModel.getFirqohFilterDisplayLabel(uiState.dashFirqohFilter)
+    val filteredSantri = if (linkedSantriId != null) {
+        db.santri.filter { it.id == linkedSantriId }
+    } else {
+        db.santri.filter { viewModel.matchesFirqohFilter(it.firqohId, uiState.dashFirqohFilter) }
+    }
+    val dashFilterLabel = if (linkedSantriId != null) {
+        filteredSantri.firstOrNull()?.nama ?: "Santri Saya"
+    } else {
+        viewModel.getFirqohFilterDisplayLabel(uiState.dashFirqohFilter)
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        // 4 Kartu Metrik Utama
-        if (isWideScreen) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                StatMetricCard(
-                    title = "Kehadiran Santri",
-                    value = "${santriStats.pct}%",
-                    subtitle = "(${santriStats.hadir}/${santriStats.total} sesi) • I:${santriStats.izin} S:${santriStats.sakit} A:${santriStats.alpha}",
-                    iconEmoji = "🎓",
-                    valueColor = Emerald900,
-                    iconBg = Emerald100,
-                    modifier = Modifier.weight(1f)
-                )
-                StatMetricCard(
-                    title = "Kehadiran Mu'allim",
-                    value = "${muallimStats.pct}%",
-                    subtitle = "(${muallimStats.hadir}/${muallimStats.total} sesi) • ${db.muallim.size} Mu'allim Aktif",
-                    iconEmoji = "📖",
-                    valueColor = Amber900,
-                    iconBg = Amber100,
-                    modifier = Modifier.weight(1f)
-                )
-                StatMetricCard(
-                    title = "Dewan Harian MMQA",
-                    value = "${dewanStats.pct}%",
-                    subtitle = "(${dewanStats.hadir}/${dewanStats.total} sesi) • ${db.dewanHarian.size} Pengurus",
-                    iconEmoji = "👑",
-                    valueColor = Sky900,
-                    iconBg = Sky100,
-                    modifier = Modifier.weight(1f)
-                )
-                if (canViewKeuanganDash) {
+        // Filter Periode Rekap & Panel Controlling WhatsApp
+        SectionCard(
+            containerColor = Color.White,
+            borderColor = Emerald100
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (canViewWaControllingDash) "📅 Filter Periode Rekap & Kontrol WA" else "📅 Filter Periode Rekap Kehadiran",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Emerald950
+                    )
+                    Text(
+                        text = if (canViewWaControllingDash) {
+                            "Filter rekap Harian, Mingguan, Bulanan, Persemester, atau Pertahun untuk controlling Dewan Harian, Orang Tua & Mu'allim."
+                        } else {
+                            "Filter rekap kehadiran Harian, Mingguan, Bulanan, Persemester, atau Pertahun."
+                        },
+                        fontSize = 10.sp,
+                        color = Slate500
+                    )
+                }
+                if (canViewWaControllingDash) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = { showWhatsappControllingDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = Emerald900, contentColor = Amber300),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 40.dp)
+                            .testTag("dash_open_wa_controlling_btn")
+                    ) {
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Kontrol WA", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            PeriodFilterBar(
+                selectedPeriod = activePeriod,
+                referenceDate = activeRefDate,
+                onSelectPeriod = { p -> viewModel.updateState { it.copy(dashPeriodeFilter = p) } },
+                onShiftDate = { delta ->
+                    viewModel.updateState {
+                        it.copy(
+                            dashPeriodeRefDate = AttendancePeriodHelper.shiftReferenceDate(
+                                it.dashPeriodeFilter,
+                                it.dashPeriodeRefDate,
+                                delta
+                            )
+                        )
+                    }
+                },
+                onResetToday = { viewModel.updateState { it.copy(dashPeriodeRefDate = MmqaConstants.todayStr()) } }
+            )
+        }
+
+        // Kartu Metrik Utama (Dinamis sesuai hak akses rekapan dari Admin)
+        val kpiCards = buildList<@Composable (Modifier) -> Unit> {
+            if (canViewSantriRekap) {
+                add { mod ->
+                    StatMetricCard(
+                        title = "Kehadiran Santri",
+                        value = "${santriStats.pct}%",
+                        subtitle = "(${santriStats.hadir}/${santriStats.total} sesi) • Telat:$santriLateTotal • I:${santriStats.izin} S:${santriStats.sakit} A:${santriStats.alpha}",
+                        iconEmoji = "🎓",
+                        valueColor = Emerald900,
+                        iconBg = Emerald100,
+                        modifier = mod
+                    )
+                }
+            }
+            if (canViewMuallimRekap) {
+                add { mod ->
+                    StatMetricCard(
+                        title = "Kehadiran Mu'allim",
+                        value = "${muallimStats.pct}%",
+                        subtitle = "(${muallimStats.hadir}/${muallimStats.total} sesi) • Telat:$muallimLateTotal • ${db.muallim.size} Mu'allim",
+                        iconEmoji = "📖",
+                        valueColor = Amber900,
+                        iconBg = Amber100,
+                        modifier = mod
+                    )
+                }
+            }
+            if (canViewDewanRekap) {
+                add { mod ->
+                    StatMetricCard(
+                        title = "Dewan Harian MMQA",
+                        value = "${dewanStats.pct}%",
+                        subtitle = "(${dewanStats.hadir}/${dewanStats.total} sesi) • Telat:$dewanLateTotal • ${db.dewanHarian.size} Pengurus",
+                        iconEmoji = "👑",
+                        valueColor = Sky900,
+                        iconBg = Sky100,
+                        modifier = mod
+                    )
+                }
+            }
+            if (canViewKeuanganDash) {
+                add { mod ->
                     StatMetricCard(
                         title = "Saldo Kas Majelis",
                         value = MmqaConstants.formatRupiah(saldoKas),
                         subtitle = "Masuk: ${MmqaConstants.formatRupiah(pemasukan)}",
                         iconEmoji = "💰",
                         highlightGradient = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = mod
                     )
-                } else {
+                }
+            } else if (canViewBermasalahDash) {
+                add { mod ->
                     StatMetricCard(
                         title = "Perlu Pembinaan",
                         value = "${problematicSantri.size} Santri",
@@ -101,61 +228,23 @@ fun DashboardScreen(
                         iconEmoji = "⚠️",
                         valueColor = if (problematicSantri.isNotEmpty()) Rose700 else Emerald900,
                         iconBg = if (problematicSantri.isNotEmpty()) Rose100 else Emerald100,
-                        modifier = Modifier.weight(1f)
+                        modifier = mod
                     )
                 }
             }
-        } else {
+        }
+
+        if (kpiCards.isNotEmpty()) {
+            val cols = if (isWideScreen) kpiCards.size.coerceAtMost(4) else 2
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    StatMetricCard(
-                        title = "Kehadiran Santri",
-                        value = "${santriStats.pct}%",
-                        subtitle = "${santriStats.hadir}/${santriStats.total} • I:${santriStats.izin} S:${santriStats.sakit} A:${santriStats.alpha}",
-                        iconEmoji = "🎓",
-                        valueColor = Emerald900,
-                        iconBg = Emerald100,
-                        modifier = Modifier.weight(1f)
-                    )
-                    StatMetricCard(
-                        title = "Kehadiran Mu'allim",
-                        value = "${muallimStats.pct}%",
-                        subtitle = "${muallimStats.hadir}/${muallimStats.total} • ${db.muallim.size} Mu'allim",
-                        iconEmoji = "📖",
-                        valueColor = Amber900,
-                        iconBg = Amber100,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    StatMetricCard(
-                        title = "Dewan Harian",
-                        value = "${dewanStats.pct}%",
-                        subtitle = "${dewanStats.hadir}/${dewanStats.total} • ${db.dewanHarian.size} Pengurus",
-                        iconEmoji = "👑",
-                        valueColor = Sky900,
-                        iconBg = Sky100,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (canViewKeuanganDash) {
-                        StatMetricCard(
-                            title = "Saldo Kas Majelis",
-                            value = MmqaConstants.formatRupiah(saldoKas),
-                            subtitle = "Masuk: ${MmqaConstants.formatRupiah(pemasukan)}",
-                            iconEmoji = "💰",
-                            highlightGradient = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                    } else {
-                        StatMetricCard(
-                            title = "Perlu Pembinaan",
-                            value = "${problematicSantri.size} Santri",
-                            subtitle = "Acuan: A≥${activeJuknisRule.batasAlphaSp1} / I≥${activeJuknisRule.batasIzinPeringatan}",
-                            iconEmoji = "⚠️",
-                            valueColor = if (problematicSantri.isNotEmpty()) Rose700 else Emerald900,
-                            iconBg = if (problematicSantri.isNotEmpty()) Rose100 else Emerald100,
-                            modifier = Modifier.weight(1f)
-                        )
+                kpiCards.chunked(cols).forEach { rowCards ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        rowCards.forEach { card ->
+                            card(Modifier.weight(1f))
+                        }
+                        repeat(cols - rowCards.size) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
                     }
                 }
             }
@@ -205,6 +294,7 @@ fun DashboardScreen(
         }
 
         // Rekap Santri Bermasalah (Alpha & Izin Sinkron Otomatis dengan Juknis Aktif)
+        if (canViewBermasalahDash) {
         SectionCard(
             containerColor = if (problematicSantri.isNotEmpty()) Rose50.copy(alpha = 0.5f) else Color.White,
             borderColor = if (problematicSantri.isNotEmpty()) Rose200 else Slate200
@@ -222,7 +312,7 @@ fun DashboardScreen(
                         color = Slate900
                     )
                     Text(
-                        text = "Acuan: ${activeJuknisRule.judul} (${activeJuknisRule.nomorDokumen})",
+                        text = "Acuan: ${activeJuknisRule.judul} • $periodLabel",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Emerald800,
@@ -277,7 +367,7 @@ fun DashboardScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "✅ Alhamdulillah, seluruh santri pada filter \"$dashFilterLabel\" berada dalam batas disiplin kehadiran sesuai Juknis aktif.",
+                        text = "✅ Alhamdulillah, seluruh santri pada filter \"$dashFilterLabel\" ($periodLabel) berada dalam batas disiplin kehadiran sesuai Juknis aktif.",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Emerald900,
@@ -356,8 +446,10 @@ fun DashboardScreen(
                 }
             }
         }
+        }
 
         // Grafik Progress Kehadiran Santri Per Firqoh
+        if (canViewSantriRekap && linkedSantriId == null) {
         SectionCard {
             Text(
                 text = "📊 Persentase Kehadiran Santri Per Firqoh",
@@ -365,17 +457,23 @@ fun DashboardScreen(
                 fontWeight = FontWeight.Black,
                 color = Slate900
             )
+            Text(
+                text = "Periode: $periodLabel",
+                fontSize = 11.sp,
+                color = Emerald800,
+                fontWeight = FontWeight.SemiBold
+            )
             Spacer(modifier = Modifier.height(10.dp))
             WaPdfActionRow(
                 onShareWa = {
                     val msg = MmqaReportFormatters.buildDashboardFirqohWa(db) { f ->
-                        viewModel.calcAttendanceStats("santri", null, f.id)
+                        viewModel.calcAttendanceStatsByPeriod("santri", null, f.id, activePeriod, activeRefDate)
                     }
                     shareTextToWhatsApp(context, msg, "Kirim Rekapan Per Firqoh")
                 },
                 onDownloadPdf = {
                     val html = MmqaReportFormatters.buildDashboardFirqohPdfHtml(db) { f ->
-                        viewModel.calcAttendanceStats("santri", null, f.id)
+                        viewModel.calcAttendanceStatsByPeriod("santri", null, f.id, activePeriod, activeRefDate)
                     }
                     printHtmlDocument(context, "Rekapan_Kehadiran_Per_Firqoh", html)
                 },
@@ -387,7 +485,8 @@ fun DashboardScreen(
                 db.firqoh.chunked(if (isWideScreen) 2 else 1).forEach { rowItems ->
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                         rowItems.forEach { f ->
-                            val st = viewModel.calcAttendanceStats("santri", null, f.id)
+                            val st = viewModel.calcAttendanceStatsByPeriod("santri", null, f.id, activePeriod, activeRefDate)
+                            val fLate = viewModel.countLateAttendance("santri", null, f.id, activePeriod, activeRefDate)
                             val countSantri = db.santri.count { it.firqohId == f.id }
                             val (bg, txt, border) = pctBadgeColors(st.pct)
                             Surface(
@@ -426,9 +525,11 @@ fun DashboardScreen(
                                     )
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Text(
-                                        text = "$countSantri Santri • Hadir ${st.hadir}/${st.total} catatan",
+                                        text = "$countSantri Santri • Hadir ${st.hadir}/${st.total} catatan" +
+                                            if (fLate > 0) " • ⏰ Telat $fLate" else "",
                                         fontSize = 11.sp,
-                                        color = Slate500
+                                        color = if (fLate > 0) Rose800 else Slate500,
+                                        fontWeight = if (fLate > 0) FontWeight.Bold else FontWeight.Normal
                                     )
                                 }
                             }
@@ -440,8 +541,10 @@ fun DashboardScreen(
                 }
             }
         }
+        }
 
         // Rekapan Persentase Kehadiran Setiap Santri
+        if (canViewSantriRekap) {
         SectionCard {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -450,43 +553,45 @@ fun DashboardScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "🎓 Rekapan Persentase Kehadiran Setiap Santri",
+                        text = if (linkedSantriId != null) "🎓 Rekapan Kehadiran Santri Anda" else "🎓 Rekapan Persentase Kehadiran Setiap Santri",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Black,
                         color = Slate900
                     )
                     Text(
-                        text = "Akumulasi seluruh sesi presensi santri berdasarkan Data Induk",
+                        text = "Periode: $periodLabel • Filter: $dashFilterLabel",
                         fontSize = 11.sp,
                         color = Slate500
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(10.dp))
-            val firqohOptions = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = true)
-            CompactDropdownSelector(
-                label = "",
-                selectedText = firqohOptions.firstOrNull { it.first == uiState.dashFirqohFilter }?.second ?: dashFilterLabel,
-                options = firqohOptions,
-                onSelect = { selected -> viewModel.updateState { it.copy(dashFirqohFilter = selected) } },
-                modifier = Modifier.fillMaxWidth()
-            )
+            if (linkedSantriId == null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                val firqohOptions = viewModel.buildFirqohFilterOptions(includeAll = true, countBySantri = true)
+                CompactDropdownSelector(
+                    label = "",
+                    selectedText = firqohOptions.firstOrNull { it.first == uiState.dashFirqohFilter }?.second ?: dashFilterLabel,
+                    options = firqohOptions,
+                    onSelect = { selected -> viewModel.updateState { it.copy(dashFirqohFilter = selected) } },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             Spacer(modifier = Modifier.height(10.dp))
             WaPdfActionRow(
                 onShareWa = {
                     val msg = MmqaReportFormatters.buildDashboardSantriWa(
                         db = db,
-                        filterLabel = dashFilterLabel,
+                        filterLabel = "$dashFilterLabel ($periodLabel)",
                         santriList = filteredSantri
-                    ) { s -> viewModel.calcAttendanceStats("santri", s.id) }
+                    ) { s -> viewModel.calcAttendanceStatsByPeriod("santri", s.id, null, activePeriod, activeRefDate) }
                     shareTextToWhatsApp(context, msg, "Kirim Rekapan Santri")
                 },
                 onDownloadPdf = {
                     val html = MmqaReportFormatters.buildDashboardSantriPdfHtml(
                         db = db,
-                        filterLabel = dashFilterLabel,
+                        filterLabel = "$dashFilterLabel ($periodLabel)",
                         santriList = filteredSantri
-                    ) { s -> viewModel.calcAttendanceStats("santri", s.id) }
+                    ) { s -> viewModel.calcAttendanceStatsByPeriod("santri", s.id, null, activePeriod, activeRefDate) }
                     printHtmlDocument(context, "Rekapan_Kehadiran_Santri", html)
                 },
                 waTestTag = "dash_santri_wa_btn",
@@ -496,11 +601,12 @@ fun DashboardScreen(
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 filteredSantri.forEach { s ->
-                    val st = viewModel.calcAttendanceStats("santri", s.id)
+                    val st = viewModel.calcAttendanceStatsByPeriod("santri", s.id, null, activePeriod, activeRefDate)
+                    val sLate = viewModel.countLateAttendance("santri", s.id, null, activePeriod, activeRefDate)
                     val (bg, txt, border) = pctBadgeColors(st.pct)
                     Surface(
-                        color = Slate50,
-                        border = BorderStroke(1.dp, Slate200),
+                        color = if (sLate > 0) Rose50.copy(alpha = 0.55f) else Slate50,
+                        border = BorderStroke(1.dp, if (sLate > 0) Rose200 else Slate200),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -519,22 +625,49 @@ fun DashboardScreen(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "H:${st.hadir}  I:${st.izin}  S:${st.sakit}  A:${st.alpha}",
+                                    text = "H:${st.hadir}  I:${st.izin}  S:${st.sakit}  A:${st.alpha}" +
+                                        if (sLate > 0) "  ⏰Telat:${sLate}x" else "",
                                     fontSize = 11.sp,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.Bold,
-                                    color = Slate700
+                                    color = if (sLate > 0) Rose800 else Slate700
                                 )
                             }
                             Spacer(modifier = Modifier.width(8.dp))
-                            StatusPill("${st.pct}%", bg, txt, border)
+                            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                StatusPill("${st.pct}%", bg, txt, border)
+                                if (canViewWaControllingDash && s.hpWali.isNotBlank()) {
+                                    Text(
+                                        text = "📲 WA Wali",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Emerald800,
+                                        modifier = Modifier.clickable {
+                                            val recent = db.absensi.filter {
+                                                it.tipe == "santri" && it.targetId == s.id &&
+                                                    AttendancePeriodHelper.matchesPeriod(it.tanggal, activePeriod, activeRefDate)
+                                            }.sortedByDescending { it.tanggal }
+                                            val msg = MmqaReportFormatters.buildWaliControllingWa(
+                                                db = db,
+                                                santri = s,
+                                                stats = st,
+                                                lateCount = sLate,
+                                                periodLabel = periodLabel,
+                                                recentLogs = recent
+                                            )
+                                            openWhatsAppDirect(context, s.hpWali, msg, "Kirim Rekap ke Wali ${s.nama}")
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+        }
 
-        // Rekapan Mu'allim & Dewan Harian
+        // Rekapan Mu'allim & Dewan Harian (Dikelola Aksesnya oleh Admin)
         val muallimCard: @Composable () -> Unit = {
             SectionCard {
                 Text(
@@ -544,7 +677,7 @@ fun DashboardScreen(
                     color = Slate900
                 )
                 Text(
-                    text = "Rekapan presensi mengajar Mu'allim perfirqoh",
+                    text = "Rekapan presensi mengajar Mu'allim • $periodLabel",
                     fontSize = 11.sp,
                     color = Slate500
                 )
@@ -552,13 +685,13 @@ fun DashboardScreen(
                 WaPdfActionRow(
                     onShareWa = {
                         val msg = MmqaReportFormatters.buildDashboardMuallimWa(db) { m ->
-                            viewModel.calcAttendanceStats("muallim", m.id)
+                            viewModel.calcAttendanceStatsByPeriod("muallim", m.id, null, activePeriod, activeRefDate)
                         }
                         shareTextToWhatsApp(context, msg, "Kirim Rekapan Mu'allim")
                     },
                     onDownloadPdf = {
                         val html = MmqaReportFormatters.buildDashboardMuallimPdfHtml(db) { m ->
-                            viewModel.calcAttendanceStats("muallim", m.id)
+                            viewModel.calcAttendanceStatsByPeriod("muallim", m.id, null, activePeriod, activeRefDate)
                         }
                         printHtmlDocument(context, "Rekapan_Kehadiran_Muallim", html)
                     },
@@ -568,7 +701,8 @@ fun DashboardScreen(
                 Spacer(modifier = Modifier.height(10.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     db.muallim.forEach { m ->
-                        val st = viewModel.calcAttendanceStats("muallim", m.id)
+                        val st = viewModel.calcAttendanceStatsByPeriod("muallim", m.id, null, activePeriod, activeRefDate)
+                        val mLate = viewModel.countLateAttendance("muallim", m.id, null, activePeriod, activeRefDate)
                         val (bg, txt, border) = pctBadgeColors(st.pct)
                         Surface(
                             color = Amber50.copy(alpha = 0.55f),
@@ -591,11 +725,12 @@ fun DashboardScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = "H/I/S/A: ${st.hadir}/${st.izin}/${st.sakit}/${st.alpha}",
+                                        text = "H/I/S/A: ${st.hadir}/${st.izin}/${st.sakit}/${st.alpha}" +
+                                            if (mLate > 0) " • ⏰Telat:${mLate}x" else "",
                                         fontSize = 11.sp,
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = FontWeight.Bold,
-                                        color = Slate700
+                                        color = if (mLate > 0) Rose800 else Slate700
                                     )
                                 }
                                 StatusPill("${st.pct}%", bg, txt, border)
@@ -615,7 +750,7 @@ fun DashboardScreen(
                     color = Slate900
                 )
                 Text(
-                    text = "Rekapan piket & kehadiran pengurus Dewan Harian",
+                    text = "Rekapan piket & kehadiran Dewan Harian • $periodLabel",
                     fontSize = 11.sp,
                     color = Slate500
                 )
@@ -623,13 +758,13 @@ fun DashboardScreen(
                 WaPdfActionRow(
                     onShareWa = {
                         val msg = MmqaReportFormatters.buildDashboardDewanWa(db) { d ->
-                            viewModel.calcAttendanceStats("dewan_harian", d.id)
+                            viewModel.calcAttendanceStatsByPeriod("dewan_harian", d.id, null, activePeriod, activeRefDate)
                         }
                         shareTextToWhatsApp(context, msg, "Kirim Rekapan Dewan Harian")
                     },
                     onDownloadPdf = {
                         val html = MmqaReportFormatters.buildDashboardDewanPdfHtml(db) { d ->
-                            viewModel.calcAttendanceStats("dewan_harian", d.id)
+                            viewModel.calcAttendanceStatsByPeriod("dewan_harian", d.id, null, activePeriod, activeRefDate)
                         }
                         printHtmlDocument(context, "Rekapan_Kehadiran_Dewan_Harian", html)
                     },
@@ -639,11 +774,12 @@ fun DashboardScreen(
                 Spacer(modifier = Modifier.height(10.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     db.dewanHarian.forEach { d ->
-                        val st = viewModel.calcAttendanceStats("dewan_harian", d.id)
+                        val st = viewModel.calcAttendanceStatsByPeriod("dewan_harian", d.id, null, activePeriod, activeRefDate)
+                        val dLate = viewModel.countLateAttendance("dewan_harian", d.id, null, activePeriod, activeRefDate)
                         val (bg, txt, border) = pctBadgeColors(st.pct)
                         Surface(
-                            color = Sky100.copy(alpha = 0.45f),
-                            border = BorderStroke(1.dp, Sky100),
+                            color = if (dLate > 0) Rose50.copy(alpha = 0.55f) else Sky100.copy(alpha = 0.45f),
+                            border = BorderStroke(1.dp, if (dLate > 0) Rose200 else Sky100),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
@@ -662,11 +798,12 @@ fun DashboardScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = "H/I/S/A: ${st.hadir}/${st.izin}/${st.sakit}/${st.alpha}",
+                                        text = "H/I/S/A: ${st.hadir}/${st.izin}/${st.sakit}/${st.alpha}" +
+                                            if (dLate > 0) " • ⏰Telat:${dLate}x" else "",
                                         fontSize = 11.sp,
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = FontWeight.Bold,
-                                        color = Slate700
+                                        color = if (dLate > 0) Rose800 else Slate700
                                     )
                                 }
                                 StatusPill("${st.pct}%", bg, txt, border)
@@ -677,14 +814,36 @@ fun DashboardScreen(
             }
         }
 
-        if (isWideScreen) {
+        if (canViewMuallimRekap && canViewDewanRekap && isWideScreen) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 Box(modifier = Modifier.weight(1f)) { muallimCard() }
                 Box(modifier = Modifier.weight(1f)) { dewanCard() }
             }
         } else {
-            muallimCard()
-            dewanCard()
+            if (canViewMuallimRekap) muallimCard()
+            if (canViewDewanRekap) dewanCard()
         }
+
+        if (!canViewSantriRekap && !canViewMuallimRekap && !canViewDewanRekap && !canViewBermasalahDash && !canViewKeuanganDash) {
+            SectionCard {
+                Text(
+                    text = "🔒 Tampilan rekapan Dashboard sedang dibatasi oleh Admin Dewan Harian.",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Slate500
+                )
+            }
+        }
+    }
+
+    if (showWhatsappControllingDialog) {
+        WhatsappControllingDialog(
+            db = db,
+            viewModel = viewModel,
+            periodFilter = activePeriod,
+            referenceDate = activeRefDate,
+            firqohFilter = uiState.dashFirqohFilter,
+            onDismiss = { showWhatsappControllingDialog = false }
+        )
     }
 }
