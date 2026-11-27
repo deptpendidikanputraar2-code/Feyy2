@@ -250,6 +250,8 @@ object MmqaJsonCodec {
         put("hpWali", s.hpWali)
         put("statusSyahriah", s.statusSyahriah)
         put("pesertaUjian", s.pesertaUjian)
+        put("id_santri", s.idSantri)
+        put("uid_nfc", s.uidNfc)
     }
 
     private fun decodeSantri(o: JSONObject) = SantriItem(
@@ -261,7 +263,9 @@ object MmqaJsonCodec {
         wali = o.optString("wali"),
         hpWali = o.optString("hpWali"),
         statusSyahriah = o.optString("statusSyahriah", "Belum Lunas"),
-        pesertaUjian = if (o.has("pesertaUjian")) o.optBoolean("pesertaUjian", true) else true
+        pesertaUjian = if (o.has("pesertaUjian")) o.optBoolean("pesertaUjian", true) else true,
+        idSantri = o.optString("id_santri").ifBlank { o.optString("idSantri") },
+        uidNfc = o.optString("uid_nfc").ifBlank { o.optString("uidNfc") }
     )
 
     private fun encodeMuallim(m: MuallimItem) = JSONObject().apply {
@@ -271,6 +275,8 @@ object MmqaJsonCodec {
         put("firqohId", m.firqohId)
         put("bidang", m.bidang)
         put("hp", m.hp)
+        put("id_santri", m.idSantri)
+        put("uid_nfc", m.uidNfc)
     }
 
     private fun decodeMuallim(o: JSONObject) = MuallimItem(
@@ -279,7 +285,9 @@ object MmqaJsonCodec {
         nama = o.optString("nama"),
         firqohId = o.optString("firqohId"),
         bidang = o.optString("bidang"),
-        hp = o.optString("hp")
+        hp = o.optString("hp"),
+        idSantri = o.optString("id_santri").ifBlank { o.optString("barcode_id").ifBlank { o.optString("idSantri") } },
+        uidNfc = o.optString("uid_nfc").ifBlank { o.optString("uidNfc") }
     )
 
     private fun encodeDewan(d: DewanHarianItem) = JSONObject().apply {
@@ -288,6 +296,8 @@ object MmqaJsonCodec {
         put("nama", d.nama)
         put("jabatan", d.jabatan)
         put("hp", d.hp)
+        put("id_santri", d.idSantri)
+        put("uid_nfc", d.uidNfc)
     }
 
     private fun decodeDewan(o: JSONObject) = DewanHarianItem(
@@ -295,7 +305,9 @@ object MmqaJsonCodec {
         kode = o.optString("kode"),
         nama = o.optString("nama"),
         jabatan = o.optString("jabatan"),
-        hp = o.optString("hp")
+        hp = o.optString("hp"),
+        idSantri = o.optString("id_santri").ifBlank { o.optString("barcode_id").ifBlank { o.optString("idSantri") } },
+        uidNfc = o.optString("uid_nfc").ifBlank { o.optString("uidNfc") }
     )
 
     private fun encodeAbsensi(a: AbsensiRecord) = JSONObject().apply {

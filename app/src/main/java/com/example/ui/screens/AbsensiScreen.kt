@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import android.app.DatePickerDialog
+import android.media.AudioManager
+import android.media.ToneGenerator
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -38,6 +40,7 @@ import com.example.ui.components.MmqaBarcodeCard
 import com.example.ui.components.MmqaBarcodeEngine
 import com.example.ui.components.MmqaModalDialog
 import com.example.ui.components.MmqaReportFormatters
+import com.example.ui.components.NfcCardReaderHelper
 import com.example.ui.components.PeriodFilterBar
 import com.example.ui.components.SectionCard
 import com.example.ui.components.StatusPill
@@ -106,6 +109,54 @@ fun AbsensiScreen(
                 db.adminConfig.permissions
             )
         )
+    }
+
+    val directNfcToneGen = remember {
+        runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 95) }.getOrNull()
+    }
+    DisposableEffect(Unit) {
+        onDispose { runCatching { directNfcToneGen?.release() } }
+    }
+    val directNfcCooldown = remember { mutableMapOf<String, Long>() }
+    val latestDb by rememberUpdatedState(db)
+    val latestCutoff by rememberUpdatedState(sessionCutoffDraft)
+
+    // Allow tapping MIFARE NFC cards directly on the Absensi screen even when camera dialog isn't open
+    LaunchedEffect(canScanBarcode, showScannerDialog) {
+        if (canScanBarcode && !showScannerDialog) {
+            NfcCardReaderHelper.events.collect { tagEvent ->
+                val uid = tagEvent.uidHex
+                val now = System.currentTimeMillis()
+                if (now - (directNfcCooldown[uid] ?: 0L) < 2500L) return@collect
+                directNfcCooldown[uid] = now
+
+                val card = MmqaBarcodeEngine.resolveScannedCode(latestDb, uid)
+                if (card != null) {
+                    val timing = viewModel.recordBarcodeAttendance(
+                        tipe = card.tipe,
+                        targetId = card.targetId,
+                        firqohId = card.firqohId,
+                        nama = card.nama,
+                        status = "Hadir",
+                        customCutoffHm = latestCutoff,
+                        metodeScan = "Tap Kartu NFC"
+                    )
+                    NfcCardReaderHelper.triggerHapticFeedback(context, isSuccess = true)
+                    runCatching {
+                        directNfcToneGen?.startTone(
+                            if (timing.terlambat) ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD else ToneGenerator.TONE_PROP_ACK,
+                            240
+                        )
+                    }
+                    val statusInfo = if (timing.terlambat) "Terlambat +${timing.menitTelat} mnt" else "Tepat Waktu"
+                    viewModel.showToast("📡 NFC: ${card.nama} Hadir ($statusInfo)")
+                } else {
+                    NfcCardReaderHelper.triggerHapticFeedback(context, isSuccess = false)
+                    runCatching { directNfcToneGen?.startTone(ToneGenerator.TONE_SUP_ERROR, 260) }
+                    viewModel.showToast("Kartu NFC ($uid) belum terdaftar di Santri/Mu'allim/Dewan!", isError = true)
+                }
+            }
+        }
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -836,14 +887,15 @@ fun AbsensiScreen(
             activeTanggal = uiState.absensiTanggal,
             activeSesi = uiState.absensiSesi,
             initialCutoffHm = sessionCutoffDraft,
-            onScannedAttendance = { card, status, customCutoffHm ->
+            onScannedAttendance = { card, status, customCutoffHm, metodeScan ->
                 viewModel.recordBarcodeAttendance(
                     tipe = card.tipe,
                     targetId = card.targetId,
                     firqohId = card.firqohId,
                     nama = card.nama,
                     status = status,
-                    customCutoffHm = customCutoffHm
+                    customCutoffHm = customCutoffHm,
+                    metodeScan = metodeScan
                 )
             },
             onDismiss = { showScannerDialog = false }

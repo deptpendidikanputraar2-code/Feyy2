@@ -62,7 +62,8 @@ private data class ScannedFeedbackUi(
     val accentBg: Color,
     val accentBorder: Color,
     val accentText: Color,
-    val badgeLabel: String
+    val badgeLabel: String,
+    val sourceTag: String
 )
 
 private fun distinctPaletteForTarget(targetId: String, terlambat: Boolean): Triple<Color, Color, Color> {
@@ -81,7 +82,7 @@ fun BarcodeScannerDialog(
     activeTanggal: String,
     activeSesi: String,
     initialCutoffHm: String? = null,
-    onScannedAttendance: (card: MmqaBarcodeCard, status: String, cutoffTimeHm: String) -> ScanTimingResult,
+    onScannedAttendance: (card: MmqaBarcodeCard, status: String, cutoffTimeHm: String, metodeScan: String) -> ScanTimingResult,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -190,7 +191,10 @@ fun BarcodeScannerDialog(
         openWhatsAppDirect(context, phone, waText, "Kirim Notifikasi Scan WA")
     }
 
-    fun handleRawCode(raw: String) {
+    val nfcStatus = remember(context) { NfcCardReaderHelper.getNfcStatus(context) }
+    var lastNfcUidSeen by remember { mutableStateOf<String?>(null) }
+
+    fun handleRawCode(raw: String, isNfc: Boolean = false, techLabel: String = "") {
         val trimmed = raw.trim()
         if (trimmed.isBlank()) return
         val now = System.currentTimeMillis()
@@ -201,12 +205,18 @@ fun BarcodeScannerDialog(
         val card = MmqaBarcodeEngine.resolveScannedCode(db, trimmed)
         if (card != null) {
             lastScanError = null
-            val timing = onScannedAttendance(card, selectedStatus, cutoffTimeHm)
+            val metodeScan = if (isNfc) "Tap Kartu NFC" else "Scan QR/Barcode"
+            val timing = onScannedAttendance(card, selectedStatus, cutoffTimeHm, metodeScan)
             val (bg, border, txt) = distinctPaletteForTarget(card.targetId, timing.terlambat)
             val badge = when {
                 timing.terlambat -> "⏰ TERLAMBAT +${timing.menitTelat} MNT"
                 selectedStatus == "Hadir" -> "✅ TEPAT WAKTU"
                 else -> "📌 ${selectedStatus.uppercase()}"
+            }
+            val srcTag = if (isNfc) {
+                "📡 NFC ${techLabel.ifBlank { "MIFARE" }} ($trimmed)"
+            } else {
+                "📷 Barcode/QR"
             }
             lastScannedFeedback = ScannedFeedbackUi(
                 card = card,
@@ -215,16 +225,37 @@ fun BarcodeScannerDialog(
                 accentBg = bg,
                 accentBorder = border,
                 accentText = txt,
-                badgeLabel = badge
+                badgeLabel = badge,
+                sourceTag = srcTag
             )
             scanCount += 1
+            NfcCardReaderHelper.triggerHapticFeedback(context, isSuccess = true)
             playPerPersonFeedback(card, selectedStatus, timing)
             if (autoWaOnScan) {
                 triggerQuickWaForCard(card, selectedStatus, timing)
             }
         } else {
-            lastScanError = "Kode \"$trimmed\" tidak ditemukan di Data Induk MMQA."
-            runCatching { toneGen?.startTone(ToneGenerator.TONE_SUP_ERROR, 260) }
+            NfcCardReaderHelper.triggerHapticFeedback(context, isSuccess = false)
+            lastScanError = if (isNfc) {
+                "Kartu NFC ($trimmed) belum terdaftar di Data Induk Santri, Mu'allim, maupun Dewan Harian. Tautkan kartu melalui menu Data Induk."
+            } else {
+                "Kode \"$trimmed\" tidak ditemukan di Data Induk MMQA."
+            }
+            if (soundAndVoiceEnabled) {
+                runCatching { toneGen?.startTone(ToneGenerator.TONE_SUP_ERROR, 260) }
+                if (isNfc && ttsReady) {
+                    runCatching {
+                        tts.speak("Kartu NFC belum terdaftar", TextToSpeech.QUEUE_FLUSH, null, "NFC_UNREG_${System.currentTimeMillis()}")
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        NfcCardReaderHelper.events.collect { tagEvent ->
+            lastNfcUidSeen = "${tagEvent.uidHex} (${tagEvent.techLabel})"
+            handleRawCode(tagEvent.uidHex, isNfc = true, techLabel = tagEvent.techLabel)
         }
     }
 
@@ -235,14 +266,14 @@ fun BarcodeScannerDialog(
     }
 
     val isEventMode = activeSesi !in listOf("Pagi", "Sore", "Malam")
-    MmqaModalDialog(title = "📷 Scan QR / Barcode Absensi", onDismiss = onDismiss) {
+    MmqaModalDialog(title = "📷 Scan Barcode & 📡 NFC Absensi", onDismiss = onDismiss) {
         Surface(
             color = if (isEventMode) Sky100 else Emerald50,
             border = BorderStroke(1.dp, if (isEventMode) Sky700.copy(alpha = 0.35f) else Emerald100),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = if (isEventMode) "🎯 Event Aktif: $activeSesi" else "📋 Sesi Aktif: Sesi $activeSesi",
                     fontSize = 12.sp,
@@ -250,10 +281,28 @@ fun BarcodeScannerDialog(
                     color = if (isEventMode) Sky900 else Emerald900
                 )
                 Text(
-                    text = "Tanggal: $activeTanggal • Deteksi otomatis jam masuk, terlambat & notifikasi unik per santri.",
+                    text = "Tanggal: $activeTanggal • Deteksi otomatis jam masuk, terlambat & suara per nama.",
                     fontSize = 11.sp,
                     color = Slate700
                 )
+                Surface(
+                    color = if (nfcStatus.first) Sky100 else Slate100,
+                    border = BorderStroke(1.dp, if (nfcStatus.first) Sky700.copy(alpha = 0.35f) else Slate200),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (nfcStatus.first) {
+                            "📡 ${nfcStatus.second}" + (lastNfcUidSeen?.let { " • Terakhir: $it" } ?: " — Tempelkan kartu kapan saja")
+                        } else {
+                            "📱 ${nfcStatus.second}"
+                        },
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (nfcStatus.first) Sky900 else Slate700,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
@@ -470,7 +519,7 @@ fun BarcodeScannerDialog(
                         )
                     }
                     Text(
-                        text = "${fb.card.roleLabel} (${fb.card.nomorIdentitas}) • ${fb.card.primaryDetailValue}",
+                        text = "${fb.sourceTag} • ${fb.card.roleLabel} (${fb.card.nomorIdentitas}) • ${fb.card.primaryDetailValue}",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = Slate900
@@ -555,7 +604,7 @@ fun BarcodeScannerDialog(
             OutlinedTextField(
                 value = manualCode,
                 onValueChange = { manualCode = it },
-                label = { Text("Input Kode / NIS / NIY / Scanner USB", fontSize = 11.sp) },
+                label = { Text("Input Kode / id_santri / UID NFC / USB", fontSize = 11.sp) },
                 singleLine = true,
                 shape = RoundedCornerShape(12.dp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -578,6 +627,151 @@ fun BarcodeScannerDialog(
             ) {
                 Icon(Icons.Default.QrCodeScanner, contentDescription = "Proses Kode", modifier = Modifier.size(18.dp))
             }
+        }
+    }
+}
+
+/**
+ * Single-shot Barcode/QR capture modal used on Detail/Edit Profile (Santri, Mu'allim, Dewan Harian)
+ * so scanning an existing physical card automatically populates and saves id_santri as the new barcode ID.
+ */
+@Composable
+fun SingleBarcodeCaptureDialog(
+    targetName: String,
+    onBarcodeCaptured: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    var hasCameraPerm by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasCameraPerm = granted
+    }
+    var torchOn by remember { mutableStateOf(false) }
+    var cameraRef by remember { mutableStateOf<Camera?>(null) }
+    var manualBarcode by remember { mutableStateOf("") }
+    var capturedOnce by remember { mutableStateOf(false) }
+
+    val toneGen = remember {
+        runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 95) }.getOrNull()
+    }
+    DisposableEffect(Unit) {
+        onDispose { runCatching { toneGen?.release() } }
+    }
+
+    LaunchedEffect(Unit) {
+        if (!hasCameraPerm) {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    fun submitCode(raw: String) {
+        val clean = raw.trim()
+        if (clean.isBlank() || capturedOnce) return
+        capturedOnce = true
+        NfcCardReaderHelper.triggerHapticFeedback(context, isSuccess = true)
+        runCatching { toneGen?.startTone(ToneGenerator.TONE_PROP_ACK, 200) }
+        onBarcodeCaptured(clean)
+        onDismiss()
+    }
+
+    MmqaModalDialog(title = "📷 Scan Barcode Kartu ($targetName)", onDismiss = onDismiss) {
+        Text(
+            text = "Arahkan kamera ke Barcode / QR Code kartu. Nilai yang terbaca otomatis tersimpan ke kolom id_santri & menjadi kode barcode baru.",
+            fontSize = 11.sp,
+            color = Slate700
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+
+        if (hasCameraPerm) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(210.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Slate900)
+            ) {
+                CameraBarcodePreview(
+                    lifecycleOwner = lifecycleOwner,
+                    onCameraReady = { cam -> cameraRef = cam },
+                    onBarcodeDetected = { raw -> submitCode(raw) },
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(width = 210.dp, height = 126.dp)
+                        .border(2.dp, Amber300, RoundedCornerShape(16.dp))
+                )
+                IconButton(
+                    onClick = {
+                        torchOn = !torchOn
+                        cameraRef?.cameraControl?.enableTorch(torchOn)
+                    },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                ) {
+                    Icon(
+                        imageVector = if (torchOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                        contentDescription = "Senter Kamera",
+                        tint = Amber300
+                    )
+                }
+            }
+        } else {
+            Surface(
+                color = Amber50,
+                border = BorderStroke(1.dp, Amber200),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(14.dp)
+                ) {
+                    Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Amber900, modifier = Modifier.size(28.dp))
+                    Text("Izin kamera diperlukan untuk memindai barcode.", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Amber950)
+                    Button(
+                        onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Emerald800)
+                    ) { Text("Izinkan Kamera", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold) }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            OutlinedTextField(
+                value = manualBarcode,
+                onValueChange = { manualBarcode = it },
+                label = { Text("Atau ketik / scanner USB ke id_santri", fontSize = 11.sp) },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { submitCode(manualBarcode) }),
+                modifier = Modifier.weight(1f)
+            )
+            Button(
+                onClick = { submitCode(manualBarcode) },
+                enabled = manualBarcode.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = Emerald800),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+            ) { Text("Pakai", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold) }
         }
     }
 }

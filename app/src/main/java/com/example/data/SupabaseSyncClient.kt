@@ -397,4 +397,52 @@ class SupabaseSyncClient {
             client.newCall(req).execute().close()
         }
     }
+
+    companion object {
+        fun isQuotaOrStorageFailure(error: Throwable?): Boolean {
+            if (error == null) return false
+            val msg = error.message.orEmpty().lowercase(Locale.ROOT)
+            if (msg.isBlank()) return false
+            val httpQuotaCodes = listOf(" 402", "error 402", "http 402", " 413", "error 413", " 507", "error 507", " 540", "error 540")
+            if (httpQuotaCodes.any { msg.contains(it) }) return true
+            val keywords = listOf(
+                "quota", "storage", "disk full", "no space", "space left",
+                "paused", "exceeded", "insufficient", "read-only", "read only",
+                "billing", "limit reached", "database size", "payload too large", "too large"
+            )
+            return keywords.any { msg.contains(it) }
+        }
+
+        fun estimateStorageFootprint(db: MmqaDatabase): StorageFootprintSummary {
+            val totalJsonBytes = runCatching {
+                MmqaJsonCodec.encodeDatabase(db).toByteArray(Charsets.UTF_8).size.toLong()
+            }.getOrDefault(0L)
+            val chatAttachBytes = db.chatMessages.sumOf { it.attachmentDataUrl.length.toLong() }
+            val juknisBytes = db.juknisDocs.sumOf { it.pdfDataUrl.length.toLong() }
+            val suratBytes = db.suratTemplates.sumOf {
+                it.pdfDataUrl.length.toLong() + it.ttdKetuaDefault.length.toLong() + it.ttdSekretarisDefault.length.toLong()
+            } + db.suratArsip.sumOf {
+                it.pdfDataUrl.length.toLong() + it.ttdKetuaDataUrl.length.toLong() + it.ttdSekretarisDataUrl.length.toLong()
+            }
+            val avatarBytes = db.users.sumOf { it.avatarBase64.length.toLong() }
+            return StorageFootprintSummary(
+                totalBytes = totalJsonBytes,
+                attachmentBytes = chatAttachBytes + juknisBytes + suratBytes + avatarBytes,
+                chatAttachmentCount = db.chatMessages.count { it.attachmentDataUrl.isNotBlank() },
+                juknisPdfCount = db.juknisDocs.count { it.pdfDataUrl.isNotBlank() },
+                suratPdfCount = db.suratTemplates.count { it.pdfDataUrl.isNotBlank() } + db.suratArsip.count { it.pdfDataUrl.isNotBlank() },
+                avatarCount = db.users.count { it.avatarBase64.isNotBlank() }
+            )
+        }
+    }
 }
+
+data class StorageFootprintSummary(
+    val totalBytes: Long,
+    val attachmentBytes: Long,
+    val chatAttachmentCount: Int,
+    val juknisPdfCount: Int,
+    val suratPdfCount: Int,
+    val avatarCount: Int
+)
+

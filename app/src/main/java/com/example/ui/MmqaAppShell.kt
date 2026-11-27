@@ -60,7 +60,9 @@ fun MmqaAppShell(
     onPickPdfTemplate: ((fileName: String, dataUrl: String) -> Unit) -> Unit,
     onPickChatDocument: ((ChatAttachmentDraft) -> Unit) -> Unit,
     onPickChatPhoto: ((ChatAttachmentDraft) -> Unit) -> Unit,
-    onSaveChatAttachment: (fileName: String, mimeType: String, dataUrl: String) -> Unit
+    onSaveChatAttachment: (fileName: String, mimeType: String, dataUrl: String) -> Unit,
+    onExportBackupJson: (filename: String) -> Unit = {},
+    onImportBackupJson: () -> Unit = {}
 ) {
     val currentUser = uiState.currentUser ?: return
     val accessibleMenus = viewModel.getAccessibleMenus()
@@ -132,6 +134,8 @@ fun MmqaAppShell(
                         onPickChatDocument = onPickChatDocument,
                         onPickChatPhoto = onPickChatPhoto,
                         onSaveChatAttachment = onSaveChatAttachment,
+                        onExportBackupJson = onExportBackupJson,
+                        onImportBackupJson = onImportBackupJson,
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
@@ -219,6 +223,8 @@ fun MmqaAppShell(
                         onPickChatDocument = onPickChatDocument,
                         onPickChatPhoto = onPickChatPhoto,
                         onSaveChatAttachment = onSaveChatAttachment,
+                        onExportBackupJson = onExportBackupJson,
+                        onImportBackupJson = onImportBackupJson,
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(innerPadding)
@@ -753,6 +759,8 @@ private fun MmqaMainContent(
     onPickChatDocument: ((ChatAttachmentDraft) -> Unit) -> Unit,
     onPickChatPhoto: ((ChatAttachmentDraft) -> Unit) -> Unit,
     onSaveChatAttachment: (fileName: String, mimeType: String, dataUrl: String) -> Unit,
+    onExportBackupJson: (filename: String) -> Unit = {},
+    onImportBackupJson: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // Full-screen viewport for Chat (no outer verticalScroll or padding)
@@ -801,7 +809,14 @@ private fun MmqaMainContent(
                 "inventaris" -> InventarisScreen(db, uiState, viewModel, isWideScreen, onExportCsv)
                 "induk" -> DataIndukScreen(db, uiState, viewModel)
                 "personalia" -> PersonaliaScreen(db, uiState, viewModel, isWideScreen)
-                "admin" -> AdminScreen(db, uiState, viewModel, isWideScreen)
+                "admin" -> AdminScreen(
+                    db = db,
+                    uiState = uiState,
+                    viewModel = viewModel,
+                    isWideScreen = isWideScreen,
+                    onExportBackupJson = onExportBackupJson,
+                    onImportBackupJson = onImportBackupJson
+                )
                 else -> DashboardScreen(db, uiState, viewModel, isWideScreen)
             }
         }

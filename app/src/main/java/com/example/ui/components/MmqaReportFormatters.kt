@@ -391,6 +391,199 @@ object MmqaReportFormatters {
         )
     }
 
+    fun buildFirqohMadingWa(
+        db: MmqaDatabase,
+        filterLabel: String,
+        firqohList: List<FirqohItem>
+    ): String = buildString {
+        val totalSantri = firqohList.sumOf { f -> db.santri.count { it.firqohId == f.id } }
+        appendLine("📌 *PAPAN INFORMASI FIRQOH (MADING) — MMQA AL RIFAI 02*")
+        appendLine("Filter: *$filterLabel* (${firqohList.size} Firqoh • $totalSantri Santri)")
+        appendLine("_Diperbarui: ${MmqaConstants.todayStr()}_")
+        appendLine()
+        firqohList.forEachIndexed { fIdx, f ->
+            val muallims = db.muallim.filter { it.firqohId == f.id }
+            val materis = db.materi.filter { m ->
+                m.firqohId == f.id || FirqohFilterHelper.matchesFilter(m.firqohId, f.id, db.firqoh)
+            }
+            val santris = db.santri.filter { it.firqohId == f.id }
+            appendLine("${fIdx + 1}. *[${f.kode}] ${f.nama}* (${f.tingkat})")
+            appendLine("   🗓️ Jadwal: ${f.jadwal.ifBlank { "-" }} • 📍 Ruang: ${f.ruangan.ifBlank { "-" }}")
+            val mNames = if (muallims.isEmpty()) "-" else muallims.joinToString(", ") { "${it.nama} (${it.bidang.ifBlank { "Mu'allim" }})" }
+            appendLine("   📖 Mu'allim: $mNames")
+            if (materis.isNotEmpty()) {
+                val matText = materis.joinToString("; ") { "${it.kitab} (${it.bab}, ${it.progress}%)" }
+                appendLine("   📚 Materi: $matText")
+            }
+            appendLine("   🎓 Daftar Santri (${santris.size}):")
+            if (santris.isEmpty()) {
+                appendLine("      _Belum ada santri terdaftar_")
+            } else {
+                santris.forEachIndexed { sIdx, s ->
+                    appendLine("      ${sIdx + 1}. ${s.nama} (NIS ${s.nis} • Angk. ${s.angkatan.ifBlank { "-" }})")
+                }
+            }
+            appendLine()
+        }
+    }.trim()
+
+    fun buildFirqohMadingPdfHtml(
+        db: MmqaDatabase,
+        filterLabel: String,
+        firqohList: List<FirqohItem>
+    ): String {
+        val totalSantri = firqohList.sumOf { f -> db.santri.count { it.firqohId == f.id } }
+        val totalMuallim = firqohList.sumOf { f -> db.muallim.count { it.firqohId == f.id } }
+
+        val cardsHtml = if (firqohList.isEmpty()) {
+            "<div class=\"empty-box\">Belum ada data firqoh pada filter ini.</div>"
+        } else {
+            firqohList.joinToString("\n") { f ->
+                val muallims = db.muallim.filter { it.firqohId == f.id }
+                val materis = db.materi.filter { m ->
+                    m.firqohId == f.id || FirqohFilterHelper.matchesFilter(m.firqohId, f.id, db.firqoh)
+                }
+                val jadwalKhusus = db.jadwal.filter { j ->
+                    j.firqohId != "ALL" && FirqohFilterHelper.matchesFilter(j.firqohId, f.id, db.firqoh)
+                }
+                val santris = db.santri.filter { it.firqohId == f.id }
+
+                val muallimHtml = if (muallims.isEmpty()) {
+                    "<div class=\"muted\">Belum ditetapkan</div>"
+                } else {
+                    muallims.joinToString("") { m ->
+                        val hpPart = if (m.hp.isNotBlank()) " • HP: ${esc(m.hp)}" else ""
+                        "<div class=\"item-line\"><strong>${esc(m.nama)}</strong> <span class=\"tag\">NIY ${esc(m.niy)}</span><br><span class=\"sub-line\">Bidang: ${esc(m.bidang.ifBlank { "-" })}$hpPart</span></div>"
+                    }
+                }
+
+                val materiHtml = buildString {
+                    if (materis.isEmpty() && jadwalKhusus.isEmpty()) {
+                        append("<div class=\"muted\">Belum ada materi tercatat</div>")
+                    } else {
+                        materis.forEach { m ->
+                            append("<div class=\"item-line\"><strong>${esc(m.kitab)}</strong> (${m.progress}%)<br><span class=\"sub-line\">Bab: ${esc(m.bab)} • Target: ${esc(m.target.ifBlank { "-" })}</span></div>")
+                        }
+                        jadwalKhusus.forEach { j ->
+                            append("<div class=\"item-line\"><strong>[${esc(j.kategori)}] ${esc(j.judul)}</strong><br><span class=\"sub-line\">${esc(j.hari)}, ${esc(j.jamMulai)}-${esc(j.jamSelesai)} • ${esc(j.tempat)}</span></div>")
+                        }
+                    }
+                }
+
+                val santriRowsHtml = if (santris.isEmpty()) {
+                    "<tr><td colspan=\"5\" style=\"text-align:center;color:#64748b;padding:10px;\">Belum ada santri terdaftar pada firqoh ini.</td></tr>"
+                } else {
+                    santris.mapIndexed { idx, s ->
+                        "<tr>" +
+                            "<td style=\"width:36px;text-align:center;\">${idx + 1}</td>" +
+                            "<td style=\"width:88px;font-family:monospace;\">${esc(s.nis)}</td>" +
+                            "<td><strong>${esc(s.nama)}</strong></td>" +
+                            "<td style=\"width:76px;text-align:center;\">${esc(s.angkatan.ifBlank { "-" })}</td>" +
+                            "<td style=\"width:100px;\">${if (s.pesertaUjian) "Peserta Ujian" else "Aktif KBM"}</td>" +
+                            "</tr>"
+                    }.joinToString("\n")
+                }
+
+                """
+                <div class="mading-card">
+                  <div class="mading-head">
+                    <div>
+                      <span class="kode-badge">${esc(f.kode)}</span>
+                      <span class="firqoh-title">${esc(f.nama)}</span>
+                    </div>
+                    <div class="tingkat-badge">Tingkat: ${esc(f.tingkat.ifBlank { "-" })}</div>
+                  </div>
+                  <div class="meta-strip">
+                    <span><strong>Jadwal:</strong> ${esc(f.jadwal.ifBlank { "-" })}</span>
+                    <span><strong>Ruang Kelas:</strong> ${esc(f.ruangan.ifBlank { "-" })}</span>
+                    <span><strong>Total Santri:</strong> ${santris.size} Santri</span>
+                  </div>
+                  <div class="info-grid">
+                    <div class="info-col">
+                      <div class="col-title">MU'ALLIM PENGAMPU</div>
+                      $muallimHtml
+                    </div>
+                    <div class="info-col">
+                      <div class="col-title">MATERI KITAB &amp; TARGET</div>
+                      $materiHtml
+                    </div>
+                  </div>
+                  <div class="roster-wrap">
+                    <div class="col-title" style="margin-bottom:6px;">DAFTAR ANGGOTA SANTRI FIRQOH</div>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th style="text-align:center;">No</th>
+                          <th>NIS</th>
+                          <th>Nama Lengkap Santri</th>
+                          <th style="text-align:center;">Angkatan</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        $santriRowsHtml
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                """.trimIndent()
+            }
+        }
+
+        return """
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <style>
+                @page { size: A4; margin: 12mm; }
+                body { font-family: sans-serif; color: #0f172a; padding: 14px; font-size: 9.5pt; line-height: 1.38; margin: 0; }
+                .kop { text-align: center; border-bottom: 3px double #064e3b; padding-bottom: 8px; margin-bottom: 12px; }
+                .kop .org { font-size: 9pt; font-weight: bold; color: #047857; letter-spacing: 0.8px; }
+                .kop h1 { margin: 2px 0; font-size: 14.5pt; color: #064e3b; }
+                .kop .sub { font-size: 9.5pt; font-weight: bold; color: #92400e; letter-spacing: 0.4px; }
+                .summary { background: #ecfdf5; border: 1px solid #a7f3d0; color: #064e3b; padding: 7px 12px; border-radius: 6px; font-weight: bold; font-size: 9.5pt; margin-bottom: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+                .mading-card { border: 2px solid #064e3b; border-radius: 10px; overflow: hidden; margin-bottom: 16px; page-break-inside: avoid; break-inside: avoid; background: #ffffff; }
+                .mading-head { background: #064e3b; color: #ffffff; padding: 9px 12px; display: flex; justify-content: space-between; align-items: center; }
+                .kode-badge { background: #fbbf24; color: #064e3b; font-weight: 900; font-size: 8.5pt; padding: 2px 7px; border-radius: 4px; margin-right: 8px; font-family: monospace; }
+                .firqoh-title { font-size: 12pt; font-weight: 900; vertical-align: middle; }
+                .tingkat-badge { background: rgba(255,255,255,0.16); border: 1px solid rgba(255,255,255,0.3); padding: 2px 9px; border-radius: 999px; font-size: 8.5pt; font-weight: bold; }
+                .meta-strip { background: #fef3c7; border-bottom: 1px solid #fde68a; color: #78350f; padding: 6px 12px; font-size: 9pt; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+                .info-grid { display: table; width: 100%; border-bottom: 1px solid #cbd5e1; table-layout: fixed; }
+                .info-col { display: table-cell; width: 50%; padding: 8px 12px; vertical-align: top; }
+                .info-col:first-child { border-right: 1px solid #cbd5e1; }
+                .col-title { font-size: 8pt; font-weight: 900; color: #047857; letter-spacing: 0.6px; margin-bottom: 4px; }
+                .item-line { margin-bottom: 5px; font-size: 9pt; }
+                .sub-line { font-size: 8.5pt; color: #475569; }
+                .tag { font-size: 8pt; background: #e2e8f0; color: #1e293b; padding: 1px 5px; border-radius: 4px; font-family: monospace; }
+                .muted { font-size: 8.5pt; color: #64748b; font-style: italic; }
+                .roster-wrap { padding: 8px 12px 10px 12px; }
+                table { width: 100%; border-collapse: collapse; }
+                th { background: #f1f5f9; color: #0f172a; text-align: left; padding: 5px 7px; font-size: 8.5pt; border: 1px solid #cbd5e1; }
+                td { padding: 5px 7px; border: 1px solid #cbd5e1; font-size: 9pt; vertical-align: middle; }
+                tr:nth-child(even) td { background: #f8fafc; }
+                .empty-box { border: 1px dashed #94a3b8; padding: 18px; text-align: center; color: #64748b; border-radius: 8px; }
+                .footer { margin-top: 10px; font-size: 8pt; color: #64748b; text-align: right; }
+              </style>
+            </head>
+            <body>
+              <div class="kop">
+                <div class="org">MAJELIS MUSYAWARAH QIRA'ATIL KUTUB &amp; AL-QUR'AN • MMQA AL RIFAI 02</div>
+                <h1>PAPAN INFORMASI FIRQOH (MADING)</h1>
+                <div class="sub">Dokumen Informasi Resmi Kelas, Mu'allim, Materi &amp; Daftar Santri</div>
+              </div>
+              <div class="summary">
+                <span>Filter: ${esc(filterLabel)}</span>
+                <span>${firqohList.size} Firqoh • $totalMuallim Mu'allim • $totalSantri Santri</span>
+                <span>Dicetak: ${esc(MmqaConstants.todayStr())} ${esc(MmqaConstants.nowTimeHm())}</span>
+              </div>
+              $cardsHtml
+              <div class="footer">Diterbitkan dari Aplikasi MMQA Al Rifai 02 — Siap Cetak untuk Mading Majelis</div>
+            </body>
+            </html>
+        """.trimIndent()
+    }
+
     // =========================================================================
     // 4. STRUKTUR PERSONALIA MMQA
     // =========================================================================

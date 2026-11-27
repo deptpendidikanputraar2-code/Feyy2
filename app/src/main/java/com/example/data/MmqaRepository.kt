@@ -65,17 +65,71 @@ class MmqaRepository(private val context: Context) {
     private val _realtimeAlerts = MutableSharedFlow<RealtimeAlertItem>(extraBufferCapacity = 12)
     val realtimeAlerts: SharedFlow<RealtimeAlertItem> = _realtimeAlerts.asSharedFlow()
 
+    private val syncPrefs by lazy {
+        context.getSharedPreferences("mmqa_sync_prefs", Context.MODE_PRIVATE)
+    }
+
+    private val _syncMode = MutableStateFlow(loadSyncMode())
+    val syncMode: StateFlow<String> = _syncMode.asStateFlow()
+
+    private val _activeBackendLabel = MutableStateFlow(
+        when (loadSyncMode()) {
+            SYNC_MODE_LOCAL_ONLY -> "Lokal AES-256"
+            SYNC_MODE_SHEETS_ONLY -> "Google Sheets"
+            else -> if (supabaseClient.isConfigured()) "Supabase" else "Google Sheets"
+        }
+    )
+    val activeBackendLabel: StateFlow<String> = _activeBackendLabel.asStateFlow()
+
+    private val _supabaseQuotaWarning = MutableStateFlow<String?>(null)
+    val supabaseQuotaWarning: StateFlow<String?> = _supabaseQuotaWarning.asStateFlow()
+
     private var pendingMutations: MutableList<PendingMutation> = mutableListOf()
     @Volatile
     private var localDataLoaded = false
     @Volatile
     private var hasMutatedBeforeLoad = false
     private var lastKnownSupabaseRevision: String? = null
+    private var supabaseBypassUntilMs: Long = 0L
+    private var quotaAlertEmittedThisSession = false
     private var debounceSyncJob: Job? = null
     private var reconnectSyncJob: Job? = null
     private var sheetsMirrorJob: Job? = null
     private var activeActorName: String = "MMQA AR2 APK"
     private var networkCallbackRegistered = false
+
+    private fun loadSyncMode(): String {
+        val raw = runCatching { syncPrefs.getString("sync_mode", SYNC_MODE_AUTO) }.getOrNull()
+        return when (raw) {
+            SYNC_MODE_SHEETS_ONLY, SYNC_MODE_LOCAL_ONLY -> raw
+            else -> SYNC_MODE_AUTO
+        }
+    }
+
+    fun setSyncMode(mode: String) {
+        val normalized = when (mode) {
+            SYNC_MODE_SHEETS_ONLY, SYNC_MODE_LOCAL_ONLY -> mode
+            else -> SYNC_MODE_AUTO
+        }
+        runCatching { syncPrefs.edit().putString("sync_mode", normalized).apply() }
+        _syncMode.value = normalized
+        if (normalized == SYNC_MODE_AUTO) {
+            supabaseBypassUntilMs = 0L
+            _supabaseQuotaWarning.value = null
+            _activeBackendLabel.value = if (supabaseClient.isConfigured()) "Supabase" else "Google Sheets"
+        } else if (normalized == SYNC_MODE_SHEETS_ONLY) {
+            _activeBackendLabel.value = "Google Sheets"
+        } else {
+            _activeBackendLabel.value = "Lokal AES-256"
+            _syncState.value = SyncBannerState.Synced(MmqaConstants.nowTimeHms(), "Lokal")
+        }
+    }
+
+    fun resetSupabaseBypass() {
+        supabaseBypassUntilMs = 0L
+        _supabaseQuotaWarning.value = null
+        quotaAlertEmittedThisSession = false
+    }
 
     init {
         _isOnlineFlow.value = isNetworkAvailable()
@@ -252,6 +306,21 @@ class MmqaRepository(private val context: Context) {
 
     suspend fun syncWithGoogleSheets(forcePushEvenIfNoMutations: Boolean = false): Result<String> {
         ensureLocalDataLoaded()
+        val mode = _syncMode.value
+        if (mode == SYNC_MODE_LOCAL_ONLY) {
+            val syncTime = MmqaConstants.nowTimeHms()
+            val cur = _database.value
+            if (cur.pendingSync || pendingMutations.isNotEmpty()) {
+                pendingMutations.clear()
+                val saved = cur.copy(lastSync = syncTime, pendingSync = false)
+                _database.value = saved
+                persistLocalState(saved, pendingMutations)
+            }
+            _activeBackendLabel.value = "Lokal AES-256"
+            _syncState.value = SyncBannerState.Synced(syncTime, "Lokal")
+            return Result.success("Tersimpan lokal terenkripsi pukul $syncTime")
+        }
+
         if (!isNetworkAvailable()) {
             _syncState.value = SyncBannerState.Offline
             return Result.failure(IllegalStateException("Perangkat sedang offline. Data tersimpan lokal."))
@@ -262,9 +331,13 @@ class MmqaRepository(private val context: Context) {
             val gasUrl = currentLocal.gasUrl.ifBlank { MmqaConstants.DEFAULT_GAS_WEBAPP_URL }
             val sheetId = currentLocal.sheetId.ifBlank { MmqaConstants.GOOGLE_SHEET_ID }
             val hasLocalChanges = pendingMutations.isNotEmpty() || currentLocal.pendingSync || forcePushEvenIfNoMutations
+            val nowMs = System.currentTimeMillis()
+            val supabaseBypassed = nowMs < supabaseBypassUntilMs && !forcePushEvenIfNoMutations
+            var workingLocal = currentLocal
+            var supabaseFallbackReason: String? = null
 
-            // 0. Fast Multi-User Cloud Sync via Supabase PostgreSQL
-            if (supabaseClient.isConfigured()) {
+            // 0. Fast Multi-User Cloud Sync via Supabase PostgreSQL (only in AUTO mode & when not bypassed)
+            if (mode == SYNC_MODE_AUTO && supabaseClient.isConfigured() && !supabaseBypassed) {
                 // Fast revision check when idle & already synced once (~40 bytes)
                 if (!hasLocalChanges && lastKnownSupabaseRevision != null) {
                     val revRes = supabaseClient.fetchRevision()
@@ -272,112 +345,127 @@ class MmqaRepository(private val context: Context) {
                         val remoteRev = revRes.getOrNull()
                         if (remoteRev != null && remoteRev == lastKnownSupabaseRevision) {
                             val syncTime = MmqaConstants.nowTimeHms()
+                            _activeBackendLabel.value = "Supabase"
+                            _supabaseQuotaWarning.value = null
                             _syncState.value = SyncBannerState.Synced(syncTime, "Cloud")
                             return@withLock Result.success("Tersinkron otomatis pukul $syncTime")
                         }
+                    } else if (SupabaseSyncClient.isQuotaOrStorageFailure(revRes.exceptionOrNull())) {
+                        supabaseFallbackReason = handleSupabaseQuotaFailure(revRes.exceptionOrNull())
                     }
                 }
 
                 // Fast delta push when we already have a synced baseline and remote hasn't changed
-                if (pendingMutations.isNotEmpty() && !forcePushEvenIfNoMutations && lastKnownSupabaseRevision != null) {
+                if (supabaseFallbackReason == null && pendingMutations.isNotEmpty() && !forcePushEvenIfNoMutations && lastKnownSupabaseRevision != null) {
                     val revRes = supabaseClient.fetchRevision()
                     if (revRes.isSuccess && revRes.getOrNull() == lastKnownSupabaseRevision) {
                         _syncState.value = SyncBannerState.Syncing
-                        val deltaPush = supabaseClient.pushMutations(currentLocal, pendingMutations.toList(), activeActorName)
+                        val deltaPush = supabaseClient.pushMutations(workingLocal, pendingMutations.toList(), activeActorName)
                         if (deltaPush.isSuccess) {
                             pendingMutations.clear()
                             lastKnownSupabaseRevision = supabaseClient.fetchRevision().getOrNull() ?: lastKnownSupabaseRevision
                             val syncTime = MmqaConstants.nowTimeHms()
-                            val finalDb = currentLocal.copy(lastSync = syncTime, pendingSync = false)
+                            val finalDb = workingLocal.copy(lastSync = syncTime, pendingSync = false)
                             _database.value = finalDb
                             persistLocalState(finalDb, pendingMutations)
+                            _activeBackendLabel.value = "Supabase"
+                            _supabaseQuotaWarning.value = null
                             _syncState.value = SyncBannerState.Synced(syncTime, "Cloud")
                             scheduleSheetsMirror(finalDb, gasUrl, sheetId, activeActorName)
                             return@withLock Result.success("Tersinkron cepat pukul $syncTime")
+                        } else {
+                            supabaseFallbackReason = handleSupabaseWriteOrQuotaFailure(deltaPush.exceptionOrNull())
                         }
+                    } else if (revRes.isFailure && SupabaseSyncClient.isQuotaOrStorageFailure(revRes.exceptionOrNull())) {
+                        supabaseFallbackReason = handleSupabaseQuotaFailure(revRes.exceptionOrNull())
                     }
                 }
 
                 // Full pull + 3-way merge + delta push (or initial seed if remote empty)
-                _syncState.value = SyncBannerState.Syncing
-                val sbFetch = supabaseClient.fetchAll(
-                    MmqaDefaults.createDefaultDatabase().copy(
-                        gasUrl = gasUrl,
-                        sheetId = sheetId,
-                        lastSync = currentLocal.lastSync
+                if (supabaseFallbackReason == null) {
+                    _syncState.value = SyncBannerState.Syncing
+                    val sbFetch = supabaseClient.fetchAll(
+                        MmqaDefaults.createDefaultDatabase().copy(
+                            gasUrl = gasUrl,
+                            sheetId = sheetId,
+                            lastSync = workingLocal.lastSync
+                        )
                     )
-                )
-                if (sbFetch.isSuccess) {
-                    val payload = sbFetch.getOrThrow()
-                    val remoteDb = payload.database
-                    val remoteWasEmpty = payload.recordCount == 0
-                    val mergedDb = if (remoteWasEmpty) {
-                        currentLocal
-                    } else if (pendingMutations.isEmpty() && !forcePushEvenIfNoMutations) {
-                        remoteDb
+                    if (sbFetch.isSuccess) {
+                        val payload = sbFetch.getOrThrow()
+                        val remoteDb = payload.database
+                        val remoteWasEmpty = payload.recordCount == 0
+                        val mergedDb = if (remoteWasEmpty) {
+                            workingLocal
+                        } else if (pendingMutations.isEmpty() && !forcePushEvenIfNoMutations) {
+                            remoteDb
+                        } else {
+                            applyPendingMutationsOntoRemote(remoteDb, workingLocal, pendingMutations)
+                        }
+
+                        var newRevision = payload.revision
+                        var writeFailure: Throwable? = null
+                        val writeSucceeded: Boolean = if (remoteWasEmpty || forcePushEvenIfNoMutations) {
+                            val pushSb = supabaseClient.pushAll(mergedDb, activeActorName)
+                            if (pushSb.isSuccess) {
+                                pendingMutations.clear()
+                                newRevision = supabaseClient.fetchRevision().getOrNull() ?: newRevision
+                                scheduleSheetsMirror(mergedDb, gasUrl, sheetId, activeActorName)
+                                true
+                            } else {
+                                writeFailure = pushSb.exceptionOrNull()
+                                false
+                            }
+                        } else if (pendingMutations.isNotEmpty()) {
+                            val deltaPush = supabaseClient.pushMutations(mergedDb, pendingMutations.toList(), activeActorName)
+                            if (deltaPush.isSuccess) {
+                                pendingMutations.clear()
+                                newRevision = supabaseClient.fetchRevision().getOrNull() ?: newRevision
+                                scheduleSheetsMirror(mergedDb, gasUrl, sheetId, activeActorName)
+                                true
+                            } else {
+                                writeFailure = deltaPush.exceptionOrNull()
+                                false
+                            }
+                        } else if (workingLocal.pendingSync) {
+                            val pushSb = supabaseClient.pushAll(mergedDb, activeActorName)
+                            if (pushSb.isSuccess) {
+                                newRevision = supabaseClient.fetchRevision().getOrNull() ?: newRevision
+                                scheduleSheetsMirror(mergedDb, gasUrl, sheetId, activeActorName)
+                                true
+                            } else {
+                                writeFailure = pushSb.exceptionOrNull()
+                                false
+                            }
+                        } else {
+                            true
+                        }
+
+                        if (writeSucceeded) {
+                            lastKnownSupabaseRevision = newRevision
+                            val syncTime = MmqaConstants.nowTimeHms()
+                            val finalDb = mergedDb.copy(lastSync = syncTime, pendingSync = pendingMutations.isNotEmpty())
+                            emitRemoteDiffNotifications(workingLocal, finalDb)
+                            _database.value = finalDb
+                            persistLocalState(finalDb, pendingMutations)
+                            _activeBackendLabel.value = "Supabase"
+                            _supabaseQuotaWarning.value = null
+                            _syncState.value = SyncBannerState.Synced(syncTime, "Cloud")
+                            return@withLock Result.success("Tersinkron pukul $syncTime")
+                        } else {
+                            // Keep merged pull safely in local database before falling back to Google Sheets
+                            workingLocal = mergedDb.copy(pendingSync = true)
+                            _database.value = workingLocal
+                            persistLocalState(workingLocal, pendingMutations)
+                            supabaseFallbackReason = handleSupabaseWriteOrQuotaFailure(writeFailure)
+                        }
                     } else {
-                        applyPendingMutationsOntoRemote(remoteDb, currentLocal, pendingMutations)
+                        supabaseFallbackReason = handleSupabaseWriteOrQuotaFailure(sbFetch.exceptionOrNull())
                     }
-
-                    var newRevision = payload.revision
-                    if (remoteWasEmpty || forcePushEvenIfNoMutations) {
-                        val pushSb = supabaseClient.pushAll(mergedDb, activeActorName)
-                        if (pushSb.isSuccess) {
-                            pendingMutations.clear()
-                            newRevision = supabaseClient.fetchRevision().getOrNull() ?: newRevision
-                            scheduleSheetsMirror(mergedDb, gasUrl, sheetId, activeActorName)
-                        }
-                    } else if (pendingMutations.isNotEmpty()) {
-                        val deltaPush = supabaseClient.pushMutations(mergedDb, pendingMutations.toList(), activeActorName)
-                        if (deltaPush.isSuccess) {
-                            pendingMutations.clear()
-                            newRevision = supabaseClient.fetchRevision().getOrNull() ?: newRevision
-                            scheduleSheetsMirror(mergedDb, gasUrl, sheetId, activeActorName)
-                        }
-                    } else if (currentLocal.pendingSync) {
-                        val pushSb = supabaseClient.pushAll(mergedDb, activeActorName)
-                        if (pushSb.isSuccess) {
-                            newRevision = supabaseClient.fetchRevision().getOrNull() ?: newRevision
-                            scheduleSheetsMirror(mergedDb, gasUrl, sheetId, activeActorName)
-                        }
-                    }
-
-                    lastKnownSupabaseRevision = newRevision
-                    val syncTime = MmqaConstants.nowTimeHms()
-                    val finalDb = mergedDb.copy(lastSync = syncTime, pendingSync = pendingMutations.isNotEmpty())
-                    val existingIds = currentLocal.chatMessages.map { it.id }.toSet()
-                    val newChats = finalDb.chatMessages.filter { it.id !in existingIds }
-                    if (newChats.isNotEmpty()) _incomingChatAlerts.tryEmit(newChats)
-
-                    val existingJuknisIds = currentLocal.juknisDocs.map { it.id }.toSet()
-                    finalDb.juknisDocs.filter { it.id !in existingJuknisIds }.takeLast(2).forEach { doc ->
-                        _realtimeAlerts.tryEmit(
-                            RealtimeAlertItem(
-                                title = "📘 Juknis / Rapat Baru: ${doc.kategori}",
-                                body = doc.judul,
-                                category = "juknis"
-                            )
-                        )
-                    }
-                    val existingJadwalIds = currentLocal.jadwal.map { it.id }.toSet()
-                    finalDb.jadwal.filter { it.id !in existingJadwalIds }.takeLast(2).forEach { jdw ->
-                        _realtimeAlerts.tryEmit(
-                            RealtimeAlertItem(
-                                title = "🗓️ Jadwal Baru: ${jdw.kategori}",
-                                body = "${jdw.judul} (${jdw.hari}, ${jdw.jamMulai}-${jdw.jamSelesai} di ${jdw.tempat})",
-                                category = "jadwal"
-                            )
-                        )
-                    }
-
-                    _database.value = finalDb
-                    persistLocalState(finalDb, pendingMutations)
-                    _syncState.value = SyncBannerState.Synced(syncTime, "Cloud")
-                    return@withLock Result.success("Tersinkron pukul $syncTime")
                 }
             }
 
-            // 1. Fallback to Google Sheets GAS / Direct Read if Supabase unavailable
+            // 1. Fallback to Google Sheets GAS / Direct Read if Supabase unavailable, bypassed, or over quota
             _syncState.value = SyncBannerState.Syncing
             val fetchRes = when (val gasRes = syncClient.fetchAllFromGas(gasUrl, sheetId)) {
                 is RemoteFetchResult.Success -> gasRes
@@ -397,24 +485,24 @@ class MmqaRepository(private val context: Context) {
             val remoteIsEmpty = remoteJson == null || MmqaJsonCodec.isRemoteDataEmpty(remoteJson)
 
             val mergedDb: MmqaDatabase = if (remoteIsEmpty) {
-                currentLocal
+                workingLocal
             } else {
                 val remoteDb = MmqaJsonCodec.mergeRemoteDataJson(
                     MmqaDefaults.createDefaultDatabase().copy(
                         gasUrl = gasUrl,
                         sheetId = sheetId,
-                        lastSync = currentLocal.lastSync
+                        lastSync = workingLocal.lastSync
                     ),
                     remoteJson!!
                 )
                 if (pendingMutations.isEmpty() && !forcePushEvenIfNoMutations) {
                     remoteDb
                 } else {
-                    applyPendingMutationsOntoRemote(remoteDb, currentLocal, pendingMutations)
+                    applyPendingMutationsOntoRemote(remoteDb, workingLocal, pendingMutations)
                 }
             }
 
-            val shouldPush = remoteIsEmpty || pendingMutations.isNotEmpty() || currentLocal.pendingSync || forcePushEvenIfNoMutations
+            val shouldPush = remoteIsEmpty || pendingMutations.isNotEmpty() || workingLocal.pendingSync || forcePushEvenIfNoMutations
             if (shouldPush) {
                 val payload = MmqaJsonCodec.encodePayload(mergedDb)
                 val pushRes = syncClient.pushSyncAll(gasUrl, sheetId, activeActorName, payload)
@@ -431,15 +519,132 @@ class MmqaRepository(private val context: Context) {
 
             val syncTime = MmqaConstants.nowTimeHms()
             val finalDb = mergedDb.copy(lastSync = syncTime, pendingSync = false)
-            val existingIds = currentLocal.chatMessages.map { it.id }.toSet()
-            val newChats = finalDb.chatMessages.filter { it.id !in existingIds }
-            if (newChats.isNotEmpty()) _incomingChatAlerts.tryEmit(newChats)
+            emitRemoteDiffNotifications(currentLocal, finalDb)
 
             _database.value = finalDb
             persistLocalState(finalDb, pendingMutations)
+            val backendDisplay = if (mode == SYNC_MODE_AUTO && supabaseClient.isConfigured()) {
+                "Google Sheets (Cadangan)"
+            } else {
+                "Google Sheets"
+            }
+            _activeBackendLabel.value = backendDisplay
             _syncState.value = SyncBannerState.Synced(syncTime, sourceLabel)
-            Result.success("Tersinkron pukul $syncTime")
+            val suffix = if (supabaseFallbackReason != null) " via Google Sheets ($supabaseFallbackReason)" else " via $sourceLabel"
+            Result.success("Tersinkron pukul $syncTime$suffix")
         }
+    }
+
+    private fun handleSupabaseQuotaFailure(error: Throwable?): String {
+        supabaseBypassUntilMs = System.currentTimeMillis() + 10 * 60_000L
+        val detail = error?.message?.take(80).orEmpty()
+        val warningMsg = "Penyimpanan/kuota Supabase penuh atau dijeda ($detail). APK otomatis beralih ke Google Sheets & Lokal AES-256."
+        _supabaseQuotaWarning.value = warningMsg
+        _activeBackendLabel.value = "Google Sheets (Cadangan)"
+        if (!quotaAlertEmittedThisSession) {
+            quotaAlertEmittedThisSession = true
+            _realtimeAlerts.tryEmit(
+                RealtimeAlertItem(
+                    title = "⚠️ Kuota Supabase Penuh — Beralih ke Cadangan",
+                    body = "Aplikasi tetap berjalan normal. Data tersimpan lokal AES-256 dan dialihkan ke Google Sheets.",
+                    category = "sync"
+                )
+            )
+        }
+        return "Kuota Supabase Penuh"
+    }
+
+    private fun handleSupabaseWriteOrQuotaFailure(error: Throwable?): String {
+        return if (SupabaseSyncClient.isQuotaOrStorageFailure(error)) {
+            handleSupabaseQuotaFailure(error)
+        } else {
+            _activeBackendLabel.value = "Google Sheets (Cadangan)"
+            "Supabase tidak terjangkau"
+        }
+    }
+
+    private fun emitRemoteDiffNotifications(previous: MmqaDatabase, updated: MmqaDatabase) {
+        val existingIds = previous.chatMessages.map { it.id }.toSet()
+        val newChats = updated.chatMessages.filter { it.id !in existingIds }
+        if (newChats.isNotEmpty()) _incomingChatAlerts.tryEmit(newChats)
+
+        val existingJuknisIds = previous.juknisDocs.map { it.id }.toSet()
+        updated.juknisDocs.filter { it.id !in existingJuknisIds }.takeLast(2).forEach { doc ->
+            _realtimeAlerts.tryEmit(
+                RealtimeAlertItem(
+                    title = "📘 Juknis / Rapat Baru: ${doc.kategori}",
+                    body = doc.judul,
+                    category = "juknis"
+                )
+            )
+        }
+        val existingJadwalIds = previous.jadwal.map { it.id }.toSet()
+        updated.jadwal.filter { it.id !in existingJadwalIds }.takeLast(2).forEach { jdw ->
+            _realtimeAlerts.tryEmit(
+                RealtimeAlertItem(
+                    title = "🗓️ Jadwal Baru: ${jdw.kategori}",
+                    body = "${jdw.judul} (${jdw.hari}, ${jdw.jamMulai}-${jdw.jamSelesai} di ${jdw.tempat})",
+                    category = "jadwal"
+                )
+            )
+        }
+    }
+
+    fun getStorageFootprint(): StorageFootprintSummary =
+        SupabaseSyncClient.estimateStorageFootprint(_database.value)
+
+    fun exportDatabaseJson(): String = MmqaJsonCodec.encodeDatabase(_database.value)
+
+    suspend fun importDatabaseJson(rawJson: String): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            val decoded = MmqaJsonCodec.decodeDatabase(rawJson)
+            if (decoded.users.isEmpty() && decoded.firqoh.isEmpty() && decoded.santri.isEmpty()) {
+                throw IllegalArgumentException("File JSON tidak berisi data MMQA yang valid.")
+            }
+            val nowTime = MmqaConstants.nowTimeHms()
+            val prepared = decoded.copy(
+                lastSync = nowTime,
+                pendingSync = _syncMode.value != SYNC_MODE_LOCAL_ONLY
+            )
+            syncMutex.withLock {
+                pendingMutations.clear()
+                _database.value = prepared
+                persistLocalState(prepared, pendingMutations)
+            }
+            prepared.santri.size + prepared.absensi.size + prepared.firqoh.size
+        }
+    }
+
+    fun clearChatAttachments(): Int {
+        var clearedCount = 0
+        val targetIds = _database.value.chatMessages
+            .filter { it.attachmentDataUrl.isNotBlank() }
+            .map { it.id }
+        if (targetIds.isEmpty()) return 0
+        val mutations = targetIds.map { PendingMutation("chatMessages", it, "upsert") }
+        mutate(mutations) { db ->
+            val updated = db.chatMessages.map { msg ->
+                if (msg.attachmentDataUrl.isNotBlank()) {
+                    clearedCount++
+                    val note = if (msg.attachmentName.isNotBlank()) {
+                        if (msg.text.isBlank()) "[Lampiran dibersihkan: ${msg.attachmentName}]" else msg.text
+                    } else msg.text
+                    msg.copy(
+                        text = note,
+                        attachmentDataUrl = "",
+                        attachmentSize = 0L
+                    )
+                } else msg
+            }
+            db.copy(chatMessages = updated)
+        }
+        return clearedCount
+    }
+
+    companion object {
+        const val SYNC_MODE_AUTO = "AUTO"
+        const val SYNC_MODE_SHEETS_ONLY = "SHEETS_ONLY"
+        const val SYNC_MODE_LOCAL_ONLY = "LOCAL_ONLY"
     }
 
     private fun applyPendingMutationsOntoRemote(

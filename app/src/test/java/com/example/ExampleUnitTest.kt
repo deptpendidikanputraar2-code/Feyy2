@@ -252,4 +252,133 @@ class ExampleUnitTest {
         assertEquals("19:45", AttendanceTimeEvaluator.defaultCutoffForSession("Malam", emptyList(), perm))
         assertEquals("09:00", AttendanceTimeEvaluator.defaultCutoffForSession("Event: Istighotsah", emptyList(), perm))
     }
+
+    @Test
+    fun firqoh_mading_pdf_formats_public_info_without_private_wali_phone() {
+        val db = MmqaDefaults.createDefaultDatabase().copy(
+            firqoh = listOf(
+                FirqohItem("F1", "F-01", "Firqoh Ula A", "Ula", "Senin-Sabtu 05:30", "Aula Barat"),
+                FirqohItem("F2", "F-02", "Firqoh Wustho B", "Wustho", "Senin-Sabtu 19:30", "Ruang 2")
+            ),
+            santri = listOf(
+                SantriItem("S1", "202601", "Ahmad Zaki", "F1", "2026", "Bpk. Hasyim", "089999111222"),
+                SantriItem("S2", "202602", "Budi Santoso", "F2", "2025", "Ibu Aminah", "089999333444")
+            ),
+            muallim = listOf(
+                MuallimItem("M1", "NIY-01", "Ust. Mansur", "F1", "Nahwu Shorof", "081111222")
+            )
+        )
+        val singleHtml = com.example.ui.components.MmqaReportFormatters.buildFirqohMadingPdfHtml(
+            db = db,
+            filterLabel = "Firqoh Ula A",
+            firqohList = listOf(db.firqoh.first())
+        )
+        assertTrue(singleHtml.contains("PAPAN INFORMASI FIRQOH (MADING)"))
+        assertTrue(singleHtml.contains("Firqoh Ula A"))
+        assertTrue(singleHtml.contains("Aula Barat"))
+        assertTrue(singleHtml.contains("Ust. Mansur"))
+        assertTrue(singleHtml.contains("Ahmad Zaki"))
+        assertFalse(singleHtml.contains("Firqoh Wustho B"))
+        assertFalse(singleHtml.contains("089999111222"))
+
+        val allHtml = com.example.ui.components.MmqaReportFormatters.buildFirqohMadingPdfHtml(
+            db = db,
+            filterLabel = "Semua Firqoh",
+            firqohList = db.firqoh
+        )
+        assertTrue(allHtml.contains("Firqoh Ula A"))
+        assertTrue(allHtml.contains("Firqoh Wustho B"))
+        assertTrue(allHtml.contains("Budi Santoso"))
+        assertFalse(allHtml.contains("089999333444"))
+    }
+
+    @Test
+    fun supabase_quota_failure_detector_identifies_storage_limits() {
+        assertTrue(com.example.data.SupabaseSyncClient.isQuotaOrStorageFailure(IllegalStateException("Supabase UPSERT error 507: Insufficient Storage")))
+        assertTrue(com.example.data.SupabaseSyncClient.isQuotaOrStorageFailure(IllegalStateException("Supabase GET error 402: database size quota exceeded")))
+        assertTrue(com.example.data.SupabaseSyncClient.isQuotaOrStorageFailure(IllegalStateException("HTTP 540: Project is paused")))
+        assertTrue(com.example.data.SupabaseSyncClient.isQuotaOrStorageFailure(IllegalStateException("Supabase UPSERT error 413: Payload too large")))
+        assertFalse(com.example.data.SupabaseSyncClient.isQuotaOrStorageFailure(IllegalStateException("java.net.SocketTimeoutException: timeout")))
+        assertFalse(com.example.data.SupabaseSyncClient.isQuotaOrStorageFailure(null))
+    }
+
+    @Test
+    fun nfc_uid_formatting_and_dual_barcode_nfc_resolution() {
+        val rawBytes = byteArrayOf(0xF7.toByte(), 0x22, 0xFF.toByte(), 0x90.toByte())
+        assertEquals("F722FF90", com.example.ui.components.NfcCardReaderHelper.formatUidHex(rawBytes))
+        assertEquals("F722FF90", com.example.ui.components.NfcCardReaderHelper.normalizeUidHex("f7:22:ff:90"))
+
+        val db = MmqaDefaults.createDefaultDatabase().copy(
+            firqoh = listOf(FirqohItem("F1", "F01", "Firqoh Ula", "Ula", "Pagi", "Aula")),
+            santri = listOf(
+                SantriItem(
+                    id = "SNT-99",
+                    nis = "202699",
+                    nama = "Santri NFC",
+                    firqohId = "F1",
+                    angkatan = "2026",
+                    wali = "Wali NFC",
+                    hpWali = "0811",
+                    idSantri = "BAR-SNT-9901",
+                    uidNfc = "F722FF90"
+                )
+            ),
+            muallim = listOf(
+                MuallimItem(
+                    id = "MLM-99",
+                    niy = "M99",
+                    nama = "Muallim NFC",
+                    firqohId = "F1",
+                    bidang = "Fiqih",
+                    hp = "0812",
+                    idSantri = "BAR-MLM-9901",
+                    uidNfc = "A1B2C3D4"
+                )
+            ),
+            dewanHarian = listOf(
+                DewanHarianItem(
+                    id = "DWH-99",
+                    kode = "DH99",
+                    nama = "Dewan NFC",
+                    jabatan = "Ketua",
+                    hp = "0813",
+                    idSantri = "BAR-DWH-9901",
+                    uidNfc = "11223344"
+                )
+            )
+        )
+
+        assertEquals("BAR-SNT-9901", MmqaBarcodeEngine.codeFor("santri", "SNT-99", "BAR-SNT-9901"))
+        assertEquals("MMQA|SNT|SNT-99", MmqaBarcodeEngine.codeFor("santri", "SNT-99", ""))
+
+        // Resolve via uid_nfc (hex uppercase or colon-separated)
+        val byNfcSantri = MmqaBarcodeEngine.resolveScannedCode(db, "F722FF90")
+        assertNotNull(byNfcSantri)
+        assertEquals("SNT-99", byNfcSantri!!.targetId)
+
+        val byNfcMuallim = MmqaBarcodeEngine.resolveScannedCode(db, "a1:b2:c3:d4")
+        assertNotNull(byNfcMuallim)
+        assertEquals("MLM-99", byNfcMuallim!!.targetId)
+
+        val byNfcDewan = MmqaBarcodeEngine.resolveScannedCode(db, "11223344")
+        assertNotNull(byNfcDewan)
+        assertEquals("DWH-99", byNfcDewan!!.targetId)
+
+        // Resolve via custom id_santri barcode
+        val byCustomBarSantri = MmqaBarcodeEngine.resolveScannedCode(db, "BAR-SNT-9901")
+        assertNotNull(byCustomBarSantri)
+        assertEquals("SNT-99", byCustomBarSantri!!.targetId)
+        assertEquals("BAR-SNT-9901", byCustomBarSantri.codeValue)
+
+        val byCustomBarMuallim = MmqaBarcodeEngine.resolveScannedCode(db, "BAR-MLM-9901")
+        assertNotNull(byCustomBarMuallim)
+        assertEquals("MLM-99", byCustomBarMuallim!!.targetId)
+
+        val byCustomBarDewan = MmqaBarcodeEngine.resolveScannedCode(db, "BAR-DWH-9901")
+        assertNotNull(byCustomBarDewan)
+        assertEquals("DWH-99", byCustomBarDewan!!.targetId)
+
+        // Unregistered NFC returns null
+        assertNull(MmqaBarcodeEngine.resolveScannedCode(db, "DEADBEEF"))
+    }
 }

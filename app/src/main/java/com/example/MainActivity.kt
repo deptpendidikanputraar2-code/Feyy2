@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.nfc.NfcAdapter
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -64,6 +65,7 @@ import com.example.ui.auth.authStateFlow
 import com.example.ui.auth.signOutGoogleAndFirebase
 import com.example.ui.components.EditProfileDialog
 import com.example.ui.components.LiquidGlassSidebarContainer
+import com.example.ui.components.NfcCardReaderHelper
 import com.example.ui.components.NotificationInboxDialog
 import com.example.ui.notifications.FirestoreNotificationViewModel
 import com.example.ui.notifications.MmqaLocalNotifier
@@ -81,15 +83,39 @@ import java.io.OutputStreamWriter
 import kotlin.math.max
 
 class MainActivity : FragmentActivity() {
+    private var nfcAdapter: NfcAdapter? = null
+
+    private val nfcReaderCallback = NfcAdapter.ReaderCallback { tag ->
+        NfcCardReaderHelper.onTagDiscovered(tag)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        nfcAdapter = runCatching { NfcAdapter.getDefaultAdapter(this) }.getOrNull()
         setContent {
             MmqaAr2Theme {
                 val vm: MmqaViewModel = viewModel()
                 MmqaRootApp(activity = this, viewModel = vm)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        runCatching {
+            nfcAdapter?.enableReaderMode(
+                this,
+                nfcReaderCallback,
+                NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK,
+                null
+            )
+        }
+    }
+
+    override fun onPause() {
+        runCatching { nfcAdapter?.disableReaderMode(this) }
+        super.onPause()
     }
 }
 
@@ -204,9 +230,53 @@ private fun MmqaRootApp(activity: FragmentActivity, viewModel: MmqaViewModel) {
 
     // Zero-permission Pickers & Document Savers
     var pendingCsvContent by remember { mutableStateOf<String?>(null) }
+    var pendingBackupJson by remember { mutableStateOf<String?>(null) }
     var pendingPdfCallback by remember { mutableStateOf<((String, String) -> Unit)?>(null) }
     var pendingChatAttachCallback by remember { mutableStateOf<((ChatAttachmentDraft) -> Unit)?>(null) }
     var pendingSaveBytes by remember { mutableStateOf<ByteArray?>(null) }
+
+    val exportJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        val content = pendingBackupJson
+        pendingBackupJson = null
+        if (uri != null && content != null) {
+            scope.launch(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        OutputStreamWriter(out, Charsets.UTF_8).use { writer ->
+                            writer.write(content)
+                        }
+                    }
+                }.onSuccess {
+                    viewModel.showToast("Backup Database JSON berhasil disimpan!")
+                }.onFailure {
+                    viewModel.showToast("Gagal mengekspor backup JSON: ${it.message}", isError = true)
+                }
+            }
+        }
+    }
+
+    val importJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                val res = runCatching {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalStateException("File backup tidak terbaca.")
+                    bytes.toString(Charsets.UTF_8)
+                }
+                withContext(Dispatchers.Main) {
+                    res.onSuccess { rawJson ->
+                        viewModel.importDatabaseBackupJson(rawJson)
+                    }.onFailure {
+                        viewModel.showToast(it.message ?: "Gagal membuka file backup JSON", isError = true)
+                    }
+                }
+            }
+        }
+    }
 
     val csvLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/csv")
@@ -608,7 +678,14 @@ private fun MmqaRootApp(activity: FragmentActivity, viewModel: MmqaViewModel) {
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
                         },
-                        onSaveChatAttachment = saveBase64Attachment
+                        onSaveChatAttachment = saveBase64Attachment,
+                        onExportBackupJson = { filename ->
+                            pendingBackupJson = viewModel.exportDatabaseBackupJson()
+                            exportJsonLauncher.launch(filename)
+                        },
+                        onImportBackupJson = {
+                            importJsonLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        }
                     )
                 }
 

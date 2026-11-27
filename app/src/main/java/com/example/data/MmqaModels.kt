@@ -102,7 +102,9 @@ data class SantriItem(
     val wali: String,
     val hpWali: String,
     val statusSyahriah: String = "Belum Lunas",
-    val pesertaUjian: Boolean = true
+    val pesertaUjian: Boolean = true,
+    val idSantri: String = "",
+    val uidNfc: String = ""
 )
 
 data class MuallimItem(
@@ -111,7 +113,9 @@ data class MuallimItem(
     val nama: String,
     val firqohId: String,
     val bidang: String,
-    val hp: String
+    val hp: String,
+    val idSantri: String = "",
+    val uidNfc: String = ""
 )
 
 data class DewanHarianItem(
@@ -119,7 +123,9 @@ data class DewanHarianItem(
     val kode: String,
     val nama: String,
     val jabatan: String,
-    val hp: String
+    val hp: String,
+    val idSantri: String = "",
+    val uidNfc: String = ""
 )
 
 data class PersonaliaItem(

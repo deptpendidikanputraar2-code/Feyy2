@@ -52,15 +52,21 @@ data class MmqaBarcodeCard(
     val primaryDetailLabel: String,
     val primaryDetailValue: String,
     val secondaryDetailLabel: String,
-    val secondaryDetailValue: String
+    val secondaryDetailValue: String,
+    val idSantri: String = "",
+    val uidNfc: String = ""
 )
 
 object MmqaBarcodeEngine {
 
-    fun codeFor(tipe: String, targetId: String): String = when (tipe) {
-        "santri" -> "MMQA|SNT|$targetId"
-        "muallim" -> "MMQA|MLM|$targetId"
-        else -> "MMQA|DWH|$targetId"
+    fun codeFor(tipe: String, targetId: String, customBarcodeId: String = ""): String {
+        val custom = customBarcodeId.trim()
+        if (custom.isNotBlank()) return custom
+        return when (tipe) {
+            "santri" -> "MMQA|SNT|$targetId"
+            "muallim" -> "MMQA|MLM|$targetId"
+            else -> "MMQA|DWH|$targetId"
+        }
     }
 
     fun buildCardForSantri(db: MmqaDatabase, s: SantriItem): MmqaBarcodeCard {
@@ -75,14 +81,16 @@ object MmqaBarcodeEngine {
             tipe = "santri",
             targetId = s.id,
             firqohId = s.firqohId,
-            codeValue = codeFor("santri", s.id),
+            codeValue = codeFor("santri", s.id, s.idSantri),
             roleLabel = "SANTRI MMQA AR2",
             nomorIdentitas = "NIS: ${s.nis}",
             nama = s.nama,
             primaryDetailLabel = "Firqoh",
             primaryDetailValue = firqohName,
             secondaryDetailLabel = "Mu'allim",
-            secondaryDetailValue = muallimNames
+            secondaryDetailValue = muallimNames,
+            idSantri = s.idSantri,
+            uidNfc = s.uidNfc
         )
     }
 
@@ -92,14 +100,16 @@ object MmqaBarcodeEngine {
             tipe = "muallim",
             targetId = m.id,
             firqohId = m.firqohId,
-            codeValue = codeFor("muallim", m.id),
+            codeValue = codeFor("muallim", m.id, m.idSantri),
             roleLabel = "MU'ALLIM FIRQOH",
             nomorIdentitas = "NIY: ${m.niy}",
             nama = m.nama,
             primaryDetailLabel = "Firqoh",
             primaryDetailValue = firqohName,
             secondaryDetailLabel = "Bidang",
-            secondaryDetailValue = m.bidang.ifBlank { "Pengajar Firqoh" }
+            secondaryDetailValue = m.bidang.ifBlank { "Pengajar Firqoh" },
+            idSantri = m.idSantri,
+            uidNfc = m.uidNfc
         )
     }
 
@@ -115,47 +125,74 @@ object MmqaBarcodeEngine {
             tipe = "dewan_harian",
             targetId = d.id,
             firqohId = "",
-            codeValue = codeFor("dewan_harian", d.id),
+            codeValue = codeFor("dewan_harian", d.id, d.idSantri),
             roleLabel = "DEWAN HARIAN MMQA",
             nomorIdentitas = "Kode: ${d.kode}",
             nama = d.nama,
             primaryDetailLabel = "PJ / Divisi",
             primaryDetailValue = pjDesc,
             secondaryDetailLabel = "Jabatan",
-            secondaryDetailValue = d.jabatan.ifBlank { "Pengurus Harian" }
+            secondaryDetailValue = d.jabatan.ifBlank { "Pengurus Harian" },
+            idSantri = d.idSantri,
+            uidNfc = d.uidNfc
         )
     }
 
     /**
-     * Resolves any scanned QR / Code128 string back to a live MmqaBarcodeCard.
-     * Supports MMQA|SNT|id, MMQA|MLM|id, MMQA|DWH|id, plus direct NIS / NIY / Kode / ID.
+     * Resolves any scanned QR / Code128 string or NFC MIFARE Classic UID back to a live MmqaBarcodeCard.
+     * Supports MMQA|SNT|id, MMQA|MLM|id, MMQA|DWH|id, id_santri (custom barcode), uid_nfc (hex UID),
+     * and direct NIS / NIY / Kode / ID.
      */
     fun resolveScannedCode(db: MmqaDatabase, rawInput: String): MmqaBarcodeCard? {
         val code = rawInput.trim()
         if (code.isBlank()) return null
+        val normalizedUid = NfcCardReaderHelper.normalizeUidHex(code)
 
         val parts = code.split("|")
         if (parts.size >= 3 && parts[0].equals("MMQA", ignoreCase = true)) {
             val kind = parts[1].uppercase()
             val id = parts[2].trim()
             return when (kind) {
-                "SNT" -> db.santri.firstOrNull { it.id.equals(id, true) || it.nis.equals(id, true) }
-                    ?.let { buildCardForSantri(db, it) }
-                "MLM" -> db.muallim.firstOrNull { it.id.equals(id, true) || it.niy.equals(id, true) }
-                    ?.let { buildCardForMuallim(db, it) }
-                "DWH" -> db.dewanHarian.firstOrNull { it.id.equals(id, true) || it.kode.equals(id, true) }
-                    ?.let { buildCardForDewan(db, it) }
+                "SNT" -> db.santri.firstOrNull {
+                    it.id.equals(id, true) ||
+                        it.nis.equals(id, true) ||
+                        (it.idSantri.isNotBlank() && it.idSantri.equals(id, true))
+                }?.let { buildCardForSantri(db, it) }
+                "MLM" -> db.muallim.firstOrNull {
+                    it.id.equals(id, true) ||
+                        it.niy.equals(id, true) ||
+                        (it.idSantri.isNotBlank() && it.idSantri.equals(id, true))
+                }?.let { buildCardForMuallim(db, it) }
+                "DWH" -> db.dewanHarian.firstOrNull {
+                    it.id.equals(id, true) ||
+                        it.kode.equals(id, true) ||
+                        (it.idSantri.isNotBlank() && it.idSantri.equals(id, true))
+                }?.let { buildCardForDewan(db, it) }
                 else -> null
             }
         }
 
-        // Direct fallback match by ID, NIS, NIY, or Kode
-        db.santri.firstOrNull { it.id.equals(code, true) || it.nis.equals(code, true) }
-            ?.let { return buildCardForSantri(db, it) }
-        db.muallim.firstOrNull { it.id.equals(code, true) || it.niy.equals(code, true) }
-            ?.let { return buildCardForMuallim(db, it) }
-        db.dewanHarian.firstOrNull { it.id.equals(code, true) || it.kode.equals(code, true) }
-            ?.let { return buildCardForDewan(db, it) }
+        // Match against id_santri (barcode), uid_nfc (NFC serial UID), ID, NIS, NIY, or Kode
+        db.santri.firstOrNull {
+            it.id.equals(code, true) ||
+                it.nis.equals(code, true) ||
+                (it.idSantri.isNotBlank() && it.idSantri.equals(code, true)) ||
+                (normalizedUid.isNotBlank() && it.uidNfc.isNotBlank() && NfcCardReaderHelper.normalizeUidHex(it.uidNfc) == normalizedUid)
+        }?.let { return buildCardForSantri(db, it) }
+
+        db.muallim.firstOrNull {
+            it.id.equals(code, true) ||
+                it.niy.equals(code, true) ||
+                (it.idSantri.isNotBlank() && it.idSantri.equals(code, true)) ||
+                (normalizedUid.isNotBlank() && it.uidNfc.isNotBlank() && NfcCardReaderHelper.normalizeUidHex(it.uidNfc) == normalizedUid)
+        }?.let { return buildCardForMuallim(db, it) }
+
+        db.dewanHarian.firstOrNull {
+            it.id.equals(code, true) ||
+                it.kode.equals(code, true) ||
+                (it.idSantri.isNotBlank() && it.idSantri.equals(code, true)) ||
+                (normalizedUid.isNotBlank() && it.uidNfc.isNotBlank() && NfcCardReaderHelper.normalizeUidHex(it.uidNfc) == normalizedUid)
+        }?.let { return buildCardForDewan(db, it) }
 
         return null
     }
@@ -383,6 +420,13 @@ fun BarcodeCardPreviewDialog(
                         fontWeight = FontWeight.Bold,
                         color = Emerald800
                     )
+                    if (card.uidNfc.isNotBlank()) {
+                        StatusPill(
+                            text = "📡 UID NFC: ${card.uidNfc}",
+                            bgColor = Sky100,
+                            textColor = Sky900
+                        )
+                    }
 
                     Surface(
                         color = Slate50,

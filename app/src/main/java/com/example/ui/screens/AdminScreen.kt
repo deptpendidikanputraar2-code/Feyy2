@@ -68,7 +68,9 @@ fun AdminScreen(
     db: MmqaDatabase,
     uiState: MmqaUiState,
     viewModel: MmqaViewModel,
-    isWideScreen: Boolean
+    isWideScreen: Boolean,
+    onExportBackupJson: (filename: String) -> Unit = {},
+    onImportBackupJson: () -> Unit = {}
 ) {
     if (uiState.currentUser?.role != "dewan_harian") {
         SectionCard {
@@ -86,6 +88,7 @@ fun AdminScreen(
     var showUserModal by remember { mutableStateOf(false) }
     var accessTargetUser by remember { mutableStateOf<UserAccount?>(null) }
     var anakSubMenuFilter by remember { mutableStateOf("ALL") }
+    var confirmClearChatAttachments by remember { mutableStateOf(false) }
 
     val cfg = db.adminConfig
 
@@ -97,7 +100,7 @@ fun AdminScreen(
                 "anaksub" to "3. Anak Sub",
                 "permissions" to "4. Izin & Tarif",
                 "users" to "5. Akun & Akses User",
-                "pwdrule" to "6. Password Rule"
+                "pwdrule" to "6. Keamanan & Cadangan"
             ),
             selectedId = uiState.adminTab,
             onSelect = { tabId -> viewModel.updateState { it.copy(adminTab = tabId) } }
@@ -848,6 +851,128 @@ fun AdminScreen(
                         }
                     }
                 }
+
+                // Penyimpanan Cloud, Mode Cadangan & Ketahanan Data
+                Spacer(modifier = Modifier.height(12.dp))
+                val syncMode by viewModel.syncMode.collectAsStateWithLifecycle()
+                val activeBackend by viewModel.activeBackendLabel.collectAsStateWithLifecycle()
+                val quotaWarning by viewModel.supabaseQuotaWarning.collectAsStateWithLifecycle()
+                val footprint = remember(
+                    db.santri.size,
+                    db.absensi.size,
+                    db.chatMessages.size,
+                    db.juknisDocs.size,
+                    db.suratArsip.size,
+                    db.suratTemplates.size
+                ) { viewModel.getStorageFootprint() }
+
+                val totalMbText = remember(footprint.totalBytes) {
+                    val kb = footprint.totalBytes / 1024.0
+                    if (kb >= 1024.0) String.format(java.util.Locale.US, "%.2f MB", kb / 1024.0)
+                    else String.format(java.util.Locale.US, "%.0f KB", kb)
+                }
+                val attachMbText = remember(footprint.attachmentBytes) {
+                    val kb = footprint.attachmentBytes / 1024.0
+                    if (kb >= 1024.0) String.format(java.util.Locale.US, "%.2f MB", kb / 1024.0)
+                    else String.format(java.util.Locale.US, "%.0f KB", kb)
+                }
+
+                SectionCard(containerColor = Sky100.copy(alpha = 0.25f), borderColor = Sky700.copy(alpha = 0.3f)) {
+                    Text("☁️ Penyimpanan Cloud, Cadangan & Ketahanan Data", fontSize = 15.sp, fontWeight = FontWeight.Black, color = Slate900)
+                    Text(
+                        text = "Jika penyimpanan gratis Supabase (500 MB) penuh atau dijeda, APK tetap berjalan penuh via Lokal AES-256 dan otomatis beralih ke Google Sheets.",
+                        fontSize = 11.sp,
+                        color = Slate700
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        StatusPill("Backend: $activeBackend", Emerald100, Emerald900)
+                        StatusPill("Ukuran Data: $totalMbText", Amber100, Amber950)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Lampiran tersimpan: $attachMbText (${footprint.chatAttachmentCount} file chat • ${footprint.juknisPdfCount} PDF juknis • ${footprint.suratPdfCount} PDF surat • ${footprint.avatarCount} foto profil)",
+                        fontSize = 11.sp,
+                        color = Slate700
+                    )
+
+                    if (!quotaWarning.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            color = Rose50,
+                            border = BorderStroke(1.dp, Rose200),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "⚠️ $quotaWarning",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Rose800,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    CompactDropdownSelector(
+                        label = "Mode Sinkronisasi Cloud",
+                        selectedText = when (syncMode) {
+                            MmqaRepository.SYNC_MODE_SHEETS_ONLY -> "Google Sheets Saja (Gratis Tanpa Supabase)"
+                            MmqaRepository.SYNC_MODE_LOCAL_ONLY -> "Lokal Perangkat Saja (Offline AES-256)"
+                            else -> "Otomatis (Supabase → Cadangan Google Sheets)"
+                        },
+                        options = listOf(
+                            MmqaRepository.SYNC_MODE_AUTO to "Otomatis (Supabase → Cadangan Google Sheets)",
+                            MmqaRepository.SYNC_MODE_SHEETS_ONLY to "Google Sheets Saja (Gratis Tanpa Supabase)",
+                            MmqaRepository.SYNC_MODE_LOCAL_ONLY to "Lokal Perangkat Saja (Offline AES-256)"
+                        ),
+                        onSelect = { selectedMode -> viewModel.setSyncMode(selectedMode) },
+                        modifier = Modifier.fillMaxWidth().testTag("admin_sync_mode_selector")
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = { viewModel.retrySupabaseSync() },
+                            colors = ButtonDefaults.buttonColors(containerColor = Emerald800),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 44.dp)
+                        ) {
+                            Text("🔄 Cek & Sinkronkan", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                        OutlinedButton(
+                            onClick = { confirmClearChatAttachments = true },
+                            enabled = footprint.chatAttachmentCount > 0,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Amber400),
+                            colors = ButtonDefaults.outlinedButtonColors(containerColor = Amber50, contentColor = Amber950),
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 44.dp)
+                        ) {
+                            Text("🧹 Hemat Kuota Chat", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { onExportBackupJson("Backup_MMQA_AR2_${MmqaConstants.todayStr()}.json") },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Emerald700),
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 44.dp).testTag("admin_export_json_btn")
+                        ) {
+                            Text("💾 Ekspor Backup JSON", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Emerald900)
+                        }
+                        OutlinedButton(
+                            onClick = { onImportBackupJson() },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Sky700),
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 44.dp).testTag("admin_import_json_btn")
+                        ) {
+                            Text("📥 Pulihkan JSON", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Sky900)
+                        }
+                    }
+                }
             }
         }
     }
@@ -870,6 +995,15 @@ fun AdminScreen(
                 accessTargetUser = null
             },
             onDismiss = { accessTargetUser = null }
+        )
+    }
+
+    if (confirmClearChatAttachments) {
+        ConfirmActionDialog(
+            title = "Bersihkan Lampiran Chat Lama",
+            message = "Semua teks pesan grup chat tetap aman, tetapi file/foto lampiran di dalam riwayat chat akan dihapus agar ukuran database kembali kecil dan hemat kuota Supabase.",
+            onDismiss = { confirmClearChatAttachments = false },
+            onConfirm = { viewModel.cleanChatAttachments() }
         )
     }
 }

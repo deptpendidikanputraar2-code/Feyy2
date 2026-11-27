@@ -82,6 +82,7 @@ data class MmqaUiState(
     val indukTab: String = "santri",
     val indukSearch: String = "",
     val santriIndukFirqoh: String = "ALL",
+    val firqohIndukFilter: String = "ALL",
     val chatChannel: String = "CHN-UMUM",
     val chatSearch: String = "",
     val chatReplyTo: ChatReplyRef? = null,
@@ -96,6 +97,9 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
     val syncState: StateFlow<SyncBannerState> = repository.syncState
     val isOnlineFlow: StateFlow<Boolean> = repository.isOnlineFlow
     val pendingMutationCount: StateFlow<Int> = repository.pendingMutationCount
+    val syncMode: StateFlow<String> = repository.syncMode
+    val activeBackendLabel: StateFlow<String> = repository.activeBackendLabel
+    val supabaseQuotaWarning: StateFlow<String?> = repository.supabaseQuotaWarning
     val incomingChatAlerts: SharedFlow<List<ChatMessageItem>> = repository.incomingChatAlerts
     val realtimeAlerts: SharedFlow<RealtimeAlertItem> = repository.realtimeAlerts
 
@@ -162,6 +166,48 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun isSupabaseConfigured(): Boolean = repository.isSupabaseConfigured()
+
+    fun setSyncMode(mode: String) {
+        repository.setSyncMode(mode)
+        val label = when (mode) {
+            MmqaRepository.SYNC_MODE_SHEETS_ONLY -> "Google Sheets Saja (Gratis)"
+            MmqaRepository.SYNC_MODE_LOCAL_ONLY -> "Lokal Perangkat Saja"
+            else -> "Otomatis (Supabase → Cadangan Google Sheets)"
+        }
+        showToast("Mode sinkronisasi diubah ke: $label")
+        if (mode != MmqaRepository.SYNC_MODE_LOCAL_ONLY && repository.isNetworkAvailable()) {
+            syncNow(manual = false)
+        }
+    }
+
+    fun retrySupabaseSync() {
+        repository.resetSupabaseBypass()
+        syncNow(manual = true, forcePush = false)
+    }
+
+    fun getStorageFootprint(): StorageFootprintSummary = repository.getStorageFootprint()
+
+    fun exportDatabaseBackupJson(): String = repository.exportDatabaseJson()
+
+    fun importDatabaseBackupJson(rawJson: String) {
+        viewModelScope.launch {
+            val res = repository.importDatabaseJson(rawJson)
+            res.onSuccess { count ->
+                showToast("Backup dipulihkan ($count data inti). Data siap dipakai & disinkronkan.")
+            }.onFailure { err ->
+                showToast(err.message ?: "Gagal memulihkan file JSON", isError = true)
+            }
+        }
+    }
+
+    fun cleanChatAttachments() {
+        val count = repository.clearChatAttachments()
+        if (count > 0) {
+            showToast("$count lampiran file chat lama dibersihkan agar kuota database tetap hemat!")
+        } else {
+            showToast("Tidak ada lampiran file chat yang perlu dibersihkan.")
+        }
+    }
 
     // =========================================================================
     // AUTHENTICATION & PASSWORD RULE
@@ -1134,9 +1180,22 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
     // =========================================================================
     // DATA INDUK ACTIONS
     // =========================================================================
-    fun saveSantri(id: String?, nis: String, angkatan: String, nama: String, firqohId: String, wali: String, hpWali: String) {
+    fun saveSantri(
+        id: String?,
+        nis: String,
+        angkatan: String,
+        nama: String,
+        firqohId: String,
+        wali: String,
+        hpWali: String,
+        idSantri: String? = null,
+        uidNfc: String? = null
+    ) {
         val existing = id?.let { sid -> database.value.santri.firstOrNull { it.id == sid } }
         val itemId = id?.takeIf { it.isNotBlank() } ?: "SNT-${System.currentTimeMillis()}"
+        val resolvedBarcode = (idSantri ?: existing?.idSantri.orEmpty()).trim()
+        val resolvedUidNfc = (uidNfc ?: existing?.uidNfc.orEmpty()).trim()
+            .replace(":", "").replace("-", "").replace(" ", "").uppercase()
         val item = SantriItem(
             id = itemId,
             nis = nis.trim(),
@@ -1146,7 +1205,9 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             wali = wali.trim(),
             hpWali = hpWali.trim(),
             statusSyahriah = existing?.statusSyahriah ?: "Belum Lunas",
-            pesertaUjian = existing?.pesertaUjian ?: true
+            pesertaUjian = existing?.pesertaUjian ?: true,
+            idSantri = resolvedBarcode,
+            uidNfc = resolvedUidNfc
         )
         repository.mutate(listOf(PendingMutation("santri", itemId, "upsert"))) { db ->
             val list = db.santri.toMutableList()
@@ -1157,9 +1218,31 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         showToast("Data Induk berhasil disimpan!")
     }
 
-    fun saveMuallim(id: String?, niy: String, nama: String, firqohId: String, bidang: String, hp: String) {
+    fun saveMuallim(
+        id: String?,
+        niy: String,
+        nama: String,
+        firqohId: String,
+        bidang: String,
+        hp: String,
+        idSantri: String? = null,
+        uidNfc: String? = null
+    ) {
+        val existing = id?.let { mid -> database.value.muallim.firstOrNull { it.id == mid } }
         val itemId = id?.takeIf { it.isNotBlank() } ?: "MLM-${System.currentTimeMillis()}"
-        val item = MuallimItem(itemId, niy.trim(), nama.trim(), firqohId, bidang.trim(), hp.trim())
+        val resolvedBarcode = (idSantri ?: existing?.idSantri.orEmpty()).trim()
+        val resolvedUidNfc = (uidNfc ?: existing?.uidNfc.orEmpty()).trim()
+            .replace(":", "").replace("-", "").replace(" ", "").uppercase()
+        val item = MuallimItem(
+            id = itemId,
+            niy = niy.trim(),
+            nama = nama.trim(),
+            firqohId = firqohId,
+            bidang = bidang.trim(),
+            hp = hp.trim(),
+            idSantri = resolvedBarcode,
+            uidNfc = resolvedUidNfc
+        )
         repository.mutate(listOf(PendingMutation("muallim", itemId, "upsert"))) { db ->
             val list = db.muallim.toMutableList()
             val idx = list.indexOfFirst { it.id == itemId }
@@ -1169,9 +1252,29 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         showToast("Data Induk berhasil disimpan!")
     }
 
-    fun saveDewanHarian(id: String?, kode: String, nama: String, jabatan: String, hp: String) {
+    fun saveDewanHarian(
+        id: String?,
+        kode: String,
+        nama: String,
+        jabatan: String,
+        hp: String,
+        idSantri: String? = null,
+        uidNfc: String? = null
+    ) {
+        val existing = id?.let { did -> database.value.dewanHarian.firstOrNull { it.id == did } }
         val itemId = id?.takeIf { it.isNotBlank() } ?: "DWH-${System.currentTimeMillis()}"
-        val item = DewanHarianItem(itemId, kode.trim(), nama.trim(), jabatan.trim(), hp.trim())
+        val resolvedBarcode = (idSantri ?: existing?.idSantri.orEmpty()).trim()
+        val resolvedUidNfc = (uidNfc ?: existing?.uidNfc.orEmpty()).trim()
+            .replace(":", "").replace("-", "").replace(" ", "").uppercase()
+        val item = DewanHarianItem(
+            id = itemId,
+            kode = kode.trim(),
+            nama = nama.trim(),
+            jabatan = jabatan.trim(),
+            hp = hp.trim(),
+            idSantri = resolvedBarcode,
+            uidNfc = resolvedUidNfc
+        )
         repository.mutate(listOf(PendingMutation("dewanHarian", itemId, "upsert"))) { db ->
             val list = db.dewanHarian.toMutableList()
             val idx = list.indexOfFirst { it.id == itemId }
@@ -1179,6 +1282,80 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             db.copy(dewanHarian = list)
         }
         showToast("Data Induk berhasil disimpan!")
+    }
+
+    fun findDuplicateNfcOwner(uidHex: String, excludeTipe: String, excludeId: String?): String? {
+        val clean = uidHex.trim().replace(":", "").replace("-", "").replace(" ", "").uppercase()
+        if (clean.isBlank()) return null
+        val db = database.value
+        db.santri.firstOrNull {
+            !(excludeTipe == "santri" && it.id == excludeId) &&
+                it.uidNfc.trim().replace(":", "").replace("-", "").replace(" ", "").uppercase() == clean
+        }?.let { return "Santri: ${it.nama} (${it.nis})" }
+        db.muallim.firstOrNull {
+            !(excludeTipe == "muallim" && it.id == excludeId) &&
+                it.uidNfc.trim().replace(":", "").replace("-", "").replace(" ", "").uppercase() == clean
+        }?.let { return "Mu'allim: ${it.nama}" }
+        db.dewanHarian.firstOrNull {
+            !(excludeTipe == "dewan" && it.id == excludeId) &&
+                it.uidNfc.trim().replace(":", "").replace("-", "").replace(" ", "").uppercase() == clean
+        }?.let { return "Dewan Harian: ${it.nama}" }
+        return null
+    }
+
+    fun linkNfcToIndukRecord(tipe: String, targetId: String, uidHex: String): Boolean {
+        val cleanUid = uidHex.trim().replace(":", "").replace("-", "").replace(" ", "").uppercase()
+        if (cleanUid.isBlank()) return false
+        val owner = findDuplicateNfcOwner(cleanUid, tipe, targetId)
+        if (owner != null) {
+            showToast("UID NFC $cleanUid sudah tertaut ke $owner!", isError = true)
+            return false
+        }
+        val col = when (tipe) {
+            "santri" -> "santri"
+            "muallim" -> "muallim"
+            else -> "dewanHarian"
+        }
+        repository.mutate(listOf(PendingMutation(col, targetId, "upsert"))) { db ->
+            when (tipe) {
+                "santri" -> db.copy(
+                    santri = db.santri.map { if (it.id == targetId) it.copy(uidNfc = cleanUid) else it }
+                )
+                "muallim" -> db.copy(
+                    muallim = db.muallim.map { if (it.id == targetId) it.copy(uidNfc = cleanUid) else it }
+                )
+                else -> db.copy(
+                    dewanHarian = db.dewanHarian.map { if (it.id == targetId) it.copy(uidNfc = cleanUid) else it }
+                )
+            }
+        }
+        showToast("Kartu NFC ($cleanUid) berhasil ditautkan & disimpan!")
+        return true
+    }
+
+    fun linkBarcodeToIndukRecord(tipe: String, targetId: String, barcodeVal: String): Boolean {
+        val clean = barcodeVal.trim()
+        if (clean.isBlank()) return false
+        val col = when (tipe) {
+            "santri" -> "santri"
+            "muallim" -> "muallim"
+            else -> "dewanHarian"
+        }
+        repository.mutate(listOf(PendingMutation(col, targetId, "upsert"))) { db ->
+            when (tipe) {
+                "santri" -> db.copy(
+                    santri = db.santri.map { if (it.id == targetId) it.copy(idSantri = clean) else it }
+                )
+                "muallim" -> db.copy(
+                    muallim = db.muallim.map { if (it.id == targetId) it.copy(idSantri = clean) else it }
+                )
+                else -> db.copy(
+                    dewanHarian = db.dewanHarian.map { if (it.id == targetId) it.copy(idSantri = clean) else it }
+                )
+            }
+        }
+        showToast("Barcode ($clean) tersimpan ke id_santri!")
+        return true
     }
 
     fun saveFirqoh(id: String?, kode: String, nama: String, tingkat: String, jadwal: String, ruangan: String) {
@@ -1740,7 +1917,8 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         firqohId: String,
         nama: String,
         status: String,
-        customCutoffHm: String? = null
+        customCutoffHm: String? = null,
+        metodeScan: String = "Scan QR/Barcode"
     ): ScanTimingResult {
         val st = _uiState.value
         val dbSnapshot = database.value
@@ -1760,13 +1938,14 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             status
         }
-        val scanNote = "Scan QR/Barcode pukul $nowHms WIB • $timingNote • Petugas: $actor"
+        val effectiveMetode = metodeScan.ifBlank { "Scan QR/Barcode" }
+        val scanNote = "$effectiveMetode pukul $nowHms WIB • $timingNote • Petugas: $actor"
 
         val updatedRec = existing?.copy(
             status = status,
             catatan = scanNote,
             waktuScan = timing.waktuScan,
-            metode = "Scan QR/Barcode",
+            metode = effectiveMetode,
             terlambat = timing.terlambat,
             menitTelat = timing.menitTelat,
             batasWaktu = timing.batasWaktu,
@@ -1781,7 +1960,7 @@ class MmqaViewModel(application: Application) : AndroidViewModel(application) {
             status = status,
             catatan = scanNote,
             waktuScan = timing.waktuScan,
-            metode = "Scan QR/Barcode",
+            metode = effectiveMetode,
             terlambat = timing.terlambat,
             menitTelat = timing.menitTelat,
             batasWaktu = timing.batasWaktu,
